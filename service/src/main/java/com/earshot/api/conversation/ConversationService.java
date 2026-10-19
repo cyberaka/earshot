@@ -59,10 +59,27 @@ public class ConversationService {
 			String channel, String text, boolean live) {
 	}
 
+	/** The user's own note; {@code clock} is set when it is pinned to a moment. */
+	public record NoteView(long id, String text, Double anchorS, String clock, Instant createdAt) {
+	}
+
 	public record Detail(long id, long recordingId, Long meetingId, String source, LocalDate date, String startClock,
 			String endClock, double durationS, String title, List<String> summary, List<String> topics,
-			List<ActionItem> actionItems, List<SpeakerView> speakers, List<SegmentView> segments, boolean ambient, String stage,
-			String status, String audioMode, boolean hasAudio) {
+			List<ActionItem> actionItems, List<SpeakerView> speakers, List<SegmentView> segments, List<NoteView> notes,
+			boolean ambient, String stage, String status, String audioMode, boolean hasAudio) {
+	}
+
+	public List<NoteView> notes(long conversationId) {
+		Conv c = db.sql(CONV_SQL + " WHERE c.id = :id").param("id", conversationId).query((rs, i) -> conv(rs)).single();
+		return notes(c);
+	}
+
+	private List<NoteView> notes(Conv c) {
+		return db.sql("SELECT id, text, anchor_s, created_at FROM note WHERE conversation_id = :c ORDER BY COALESCE(anchor_s, 1e12), created_at")
+				.param("c", c.id()).query((rs, i) -> {
+					Double a = (Double) rs.getObject(3);
+					return new NoteView(rs.getLong(1), rs.getString(2), a, a == null ? null : clock(c, a, HMS), rs.getTimestamp(4).toInstant());
+				}).list();
 	}
 
 	record Conv(long id, long recordingId, Long meetingId, Long dupOf, double startOff, double endOff, Instant recStart,
@@ -135,23 +152,12 @@ public class ConversationService {
 		return "done".equals(c.status()) ? "Conversation" : "Processing…";
 	}
 
-	public Detail detail(long id) {
-		Conv c = db.sql(CONV_SQL + " WHERE c.id = :id").param("id", id).query((rs, i) -> conv(rs)).single();
-		var speakers = names.forConversation(id);
-		var summary = new ArrayList<String>();
-		if (c.summary() != null) {
-			json.readTree(c.summary()).path("bullets").forEach(b -> summary.add(names.render(b.asString(), speakers)));
-		}
-		var topics = new ArrayList<String>();
-		if (c.topics() != null) {
-			json.readTree(c.topics()).forEach(t -> topics.add(t.asString()));
-		}
-		var actions = db.sql("SELECT id, text, owner_cluster_id, done FROM action_item WHERE conversation_id = :c ORDER BY id")
-				.param("c", id).query((rs, i) -> {
-					Long owner = (Long) rs.getObject(3);
-					var sp = owner == null ? null : speakers.get(owner);
-					return new ActionItem(rs.getLong(1), names.render(rs.getString(2), speakers), sp == null ? null : sp.name(), rs.getBoolean(4));
-				}).list();
+	/** Speakers of a conversation with current names and, for unnamed ones, a near-threshold suggestion. */
+	public List<SpeakerView> speakers(long id) {
+		return speakers(id, names.forConversation(id));
+	}
+
+	private List<SpeakerView> speakers(long id, Map<Long, SpeakerNames.Speaker> speakers) {
 		var speechByCluster = db.sql("SELECT id, speech_s, embedding::text, person_id FROM speaker_cluster WHERE conversation_id = :c")
 				.param("c", id).query((rs, i) -> new Object[] { rs.getLong(1), rs.getDouble(2), rs.getString(3), rs.getObject(4) }).list();
 		var speakerViews = new ArrayList<SpeakerView>();
@@ -174,6 +180,27 @@ public class ConversationService {
 					suggestion, suggestionId));
 		}
 		speakerViews.sort((a, b) -> a.isMe() != b.isMe() ? (a.isMe() ? -1 : 1) : a.name().compareTo(b.name()));
+		return speakerViews;
+	}
+
+	public Detail detail(long id) {
+		Conv c = db.sql(CONV_SQL + " WHERE c.id = :id").param("id", id).query((rs, i) -> conv(rs)).single();
+		var speakers = names.forConversation(id);
+		var summary = new ArrayList<String>();
+		if (c.summary() != null) {
+			json.readTree(c.summary()).path("bullets").forEach(b -> summary.add(names.render(b.asString(), speakers)));
+		}
+		var topics = new ArrayList<String>();
+		if (c.topics() != null) {
+			json.readTree(c.topics()).forEach(t -> topics.add(t.asString()));
+		}
+		var actions = db.sql("SELECT id, text, owner_cluster_id, done FROM action_item WHERE conversation_id = :c ORDER BY id")
+				.param("c", id).query((rs, i) -> {
+					Long owner = (Long) rs.getObject(3);
+					var sp = owner == null ? null : speakers.get(owner);
+					return new ActionItem(rs.getLong(1), names.render(rs.getString(2), speakers), sp == null ? null : sp.name(), rs.getBoolean(4));
+				}).list();
+		var speakerViews = speakers(id, speakers);
 		var segments = db.sql("""
 				SELECT id, start_s, end_s, speaker_cluster_id, channel, text, live FROM segment
 				WHERE conversation_id = :c ORDER BY start_s""").param("c", id).query((rs, i) -> {
@@ -187,7 +214,7 @@ public class ConversationService {
 		}).list();
 		return new Detail(id, c.recordingId(), c.meetingId(), c.sourceType(), c.date(), clock(c, c.startOff(), HM),
 				clock(c, c.endOff(), HM), c.endOff() - c.startOff(), displayTitle(c, speakers), summary, topics, actions,
-				speakerViews, segments, c.ambient(), c.stage(), c.status(), c.audioMode(), c.workPath() != null);
+				speakerViews, segments, notes(c), c.ambient(), c.stage(), c.status(), c.audioMode(), c.workPath() != null);
 	}
 
 	public JsonNode raw(String text) {

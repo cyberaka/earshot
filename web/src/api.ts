@@ -22,12 +22,16 @@ export interface SegmentView {
   clusterId: number | null; channel: string; text: string; live: boolean
 }
 
+export interface NoteView { id: number; text: string; anchorS: number | null; clock: string | null; createdAt: string }
+
+export interface NoteHit { noteId: number; conversationId: number; text: string; date: string; clock: string | null; conversationTitle: string | null }
+
 export interface ActionItem { id: number; text: string; owner: string | null; done: boolean }
 
 export interface ConversationDetail {
   id: number; recordingId: number; meetingId: number | null; source: string; date: string
   startClock: string; endClock: string; durationS: number; title: string; summary: string[]; topics: string[]
-  actionItems: ActionItem[]; speakers: SpeakerView[]; segments: SegmentView[]; ambient: boolean
+  actionItems: ActionItem[]; speakers: SpeakerView[]; segments: SegmentView[]; notes: NoteView[]; ambient: boolean
   stage: string; status: string; audioMode: string | null; hasAudio: boolean
 }
 
@@ -75,6 +79,7 @@ export interface MeetingSummary {
 export interface MeetingView {
   id: number; title: string; audio_mode: string; started_at: string; ended_at: string | null; status: string
   summary: MeetingSummary | null; pre_context: string | null; conversation_id: number; recording_id: number; live: boolean
+  parts: { part: number; conversation_id: number; recording_id: number; started_at: string; local_date: string; duration_s: number }[]
 }
 
 export interface Devices {
@@ -107,8 +112,13 @@ export const api = {
   deleteDay: (date: string) => send('DELETE', `/api/days/${date}`),
   audioUrl: (recordingId: number, start: number, end: number) => `/api/audio/${recordingId}?start=${start.toFixed(2)}&end=${end.toFixed(2)}`,
 
+  addNote: (conversationId: number, text: string, anchorS: number | null) =>
+    send<{ id: number }>('POST', `/api/conversations/${conversationId}/notes`, { text, anchorS }),
+  editNote: (id: number, text: string) => send('PATCH', `/api/notes/${id}`, { text }),
+  deleteNote: (id: number) => send('DELETE', `/api/notes/${id}`),
+
   search: (q: string, from?: string, to?: string) =>
-    get<SearchHit[]>(`/api/search?q=${encodeURIComponent(q)}${from ? `&from=${from}` : ''}${to ? `&to=${to}` : ''}`),
+    get<{ transcript: SearchHit[]; notes: NoteHit[] }>(`/api/search?q=${encodeURIComponent(q)}${from ? `&from=${from}` : ''}${to ? `&to=${to}` : ''}`),
 
   people: () => get<{ people: Person[]; unknowns: Unknown[] }>('/api/people'),
   assignCluster: (id: number, body: { personId?: number | null; name?: string; me?: boolean; addToLibrary: boolean }) =>
@@ -146,6 +156,7 @@ export const api = {
   meetings: () => get<{ id: number; title: string; audio_mode: string; started_at: string; ended_at: string | null; status: string }[]>('/api/meetings'),
   startMeeting: (body: Record<string, unknown>) => send<{ meetingId: number }>('POST', '/api/meetings', body),
   stopMeeting: (id: number) => send('POST', `/api/meetings/${id}/stop`),
+  resumeMeeting: (id: number, body: Record<string, unknown>) => send<{ meetingId: number }>('POST', `/api/meetings/${id}/resume`, body),
   meeting: (id: number) => get<MeetingView>(`/api/meetings/${id}`),
   meetingContext: (file: File) => {
     const fd = new FormData()

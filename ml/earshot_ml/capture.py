@@ -240,9 +240,20 @@ def health():
     return {"status": "up", "active": list(ACTIVE)}
 
 
+def _rescan() -> None:
+    """PortAudio lists devices once per process; re-read them so a new Aggregate Device or
+    BlackHole shows up without a restart. Never while recording: it would close the stream."""
+    if ACTIVE:
+        return
+    import sounddevice as sd
+    sd._terminate()
+    sd._initialize()
+
+
 @app.get("/capture/devices")
 def devices():
     import sounddevice as sd
+    _rescan()
     inputs = [{"index": i, "name": d["name"], "channels": d["max_input_channels"], "sample_rate": d["default_samplerate"]}
               for i, d in enumerate(sd.query_devices()) if d["max_input_channels"] > 0]
     out = _default_output()
@@ -264,6 +275,7 @@ def heartbeat():
 def start(req: Start):
     if ACTIVE:
         raise HTTPException(status_code=409, detail="a meeting is already recording")
+    _rescan()
     rec = Recording(req)
     try:
         rec.start()

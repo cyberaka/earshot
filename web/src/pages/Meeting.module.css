@@ -97,3 +97,38 @@
   .lines { max-height: none; }
   .liveChips { margin-left: 0; }
 }
+
+.speakerBar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 20px; border-bottom: 1px solid var(--border-soft); }
+.nameBtn {
+  min-height: 32px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px dashed var(--muted);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 13px;
+  cursor: pointer;
+}
+.namingWrap { padding: 10px 20px; border-bottom: 1px solid var(--border-soft); }
+.whoBtn {
+  composes: who;
+  border: 0;
+  background: none;
+  padding: 0;
+  text-align: left;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.whoBtn:hover { text-decoration: underline; }
+
+.partDivider {
+  margin: 14px 0 6px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+}

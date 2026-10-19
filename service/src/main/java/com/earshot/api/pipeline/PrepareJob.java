@@ -93,10 +93,12 @@ public class PrepareJob implements JobWorker.Handler {
 			long cid = db.sql("""
 					INSERT INTO conversation (recording_id, start_offset_s, end_offset_s, started_at, local_date, duplicate_of_meeting_id)
 					VALUES (:r, :s, :e, :t, :d, (
-					    SELECT m.id FROM meeting m WHERE m.ended_at IS NOT NULL
-					      AND LEAST(m.ended_at, CAST(:end AS timestamptz)) - GREATEST(m.started_at, CAST(:t AS timestamptz))
-					          >= 0.5 * LEAST(m.ended_at - m.started_at, CAST(:end AS timestamptz) - CAST(:t AS timestamptz))
-					    ORDER BY m.id LIMIT 1))
+					    -- Each part of a meeting separately: a resumed meeting spans days, its parts do not.
+					    SELECT p.meeting_id FROM conversation p WHERE p.meeting_id IS NOT NULL AND p.status = 'done'
+					      AND LEAST(p.started_at + make_interval(secs => p.end_offset_s), CAST(:end AS timestamptz))
+					          - GREATEST(p.started_at, CAST(:t AS timestamptz))
+					          >= 0.5 * LEAST(make_interval(secs => p.end_offset_s), CAST(:end AS timestamptz) - CAST(:t AS timestamptz))
+					    ORDER BY p.id LIMIT 1))
 					RETURNING id""").param("r", id).param("s", s.start()).param("e", s.end()).param("t", java.sql.Timestamp.from(start))
 					.param("end", java.sql.Timestamp.from(end)).param("d", start.atZone(zone).toLocalDate()).query(Long.class).single();
 			jobs.enqueue("conversation", null, cid, null);

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { api, nearest, fmtDuration, speakerColor, todayLocal, type ConversationDetail, type DayView, type Person, type SpeakerView } from '../api'
+import { api, nearest, fmtDuration, speakerColor, todayLocal, type ConversationDetail, type DayView, type NoteView, type Person, type SpeakerView } from '../api'
 import AskBox from '../components/AskBox'
+import NotesSection, { NoteEditor, NoteItem } from '../components/Notes'
 import ui from '../components/ui.module.css'
 import s from './Today.module.css'
 
@@ -105,6 +106,7 @@ function Conversation({ id, onChanged, seek, onSeekDone }: { id: number; onChang
   const [naming, setNaming] = useState<SpeakerView | null>(null)
   const [markMe, setMarkMe] = useState<Set<number> | null>(null)
   const [highlight, setHighlight] = useState<number | null>(null)
+  const [pinTo, setPinTo] = useState<number | null>(null)
   const audio = useRef<HTMLAudioElement>(null)
   const rows = useRef<Map<number, HTMLDivElement>>(new Map())
 
@@ -125,6 +127,13 @@ function Conversation({ id, onChanged, seek, onSeekDone }: { id: number; onChang
     onSeekDone()
   }, [seek, d, onSeekDone])
 
+  function jump(at: number) {
+    const target = d && nearest(d.segments, at)
+    if (!target) return
+    setHighlight(target.id)
+    rows.current.get(target.id)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
+
   function play(start: number, end: number) {
     if (!d || !audio.current) return
     audio.current.src = api.audioUrl(d.recordingId, start, end)
@@ -139,6 +148,13 @@ function Conversation({ id, onChanged, seek, onSeekDone }: { id: number; onChang
   }
 
   if (!d) return <article className={s.detail}><span className={ui.muted}>Loading…</span></article>
+
+  // Pinned notes sit under the line nearest their moment.
+  const pinned = new Map<number, NoteView[]>()
+  for (const n of d.notes) {
+    const seg = n.anchorS === null ? undefined : nearest(d.segments, n.anchorS)
+    if (seg) pinned.set(seg.id, [...(pinned.get(seg.id) ?? []), n])
+  }
 
   return (
     <article className={s.detail}>
@@ -192,11 +208,13 @@ function Conversation({ id, onChanged, seek, onSeekDone }: { id: number; onChang
         </div>
       )}
 
+      <NotesSection conversationId={d.id} notes={d.notes} onChanged={load} onJump={jump} />
+
       {d.segments.length > 0 && (
         <section>
           <div className={s.transcriptHead}>
             <h3 className={ui.sectionLabel}>Transcript</h3>
-            {d.source !== 'meeting' && (markMe
+            {(markMe
               ? <span className={s.markBar}>{markMe.size} selected <button className={ui.btnSmall} onClick={saveMe} disabled={markMe.size === 0}>Save as my voice</button><button className={ui.btnSmall} onClick={() => setMarkMe(null)}>Cancel</button></span>
               : <button className={ui.btnSmall} onClick={() => setMarkMe(new Set())}>Mark lines that are me</button>)}
           </div>
@@ -205,7 +223,8 @@ function Conversation({ id, onChanged, seek, onSeekDone }: { id: number; onChang
             {d.segments.map(seg => {
               const col = speakerColor(seg.key)
               return (
-                <div key={seg.id} ref={el => { if (el) rows.current.set(seg.id, el) }} className={highlight === seg.id ? s.lineCited : s.line}>
+                <div key={seg.id}>
+                <div ref={el => { if (el) rows.current.set(seg.id, el) }} className={highlight === seg.id ? s.lineCited : s.line}>
                   {markMe
                     ? <input type="checkbox" aria-label={`Mark line at ${seg.clock} as me`} className={s.markBox} checked={markMe.has(seg.id)}
                       onChange={e => { const n = new Set(markMe); if (e.target.checked) n.add(seg.id); else n.delete(seg.id); setMarkMe(n) }} />
@@ -215,6 +234,16 @@ function Conversation({ id, onChanged, seek, onSeekDone }: { id: number; onChang
                   <span className={s.clock}>{seg.clock}</span>
                   <span className={s.who} style={{ color: col.fg }}>{seg.speaker}</span>
                   <span className={s.text}>{seg.text}</span>
+                  {!markMe && <button className={s.noteBtn} aria-label={`Add a note at ${seg.clock}`} title="Add a note here"
+                    onClick={() => setPinTo(pinTo === seg.id ? null : seg.id)}>+ note</button>}
+                </div>
+                {(pinned.get(seg.id) ?? []).map(n => <div key={n.id} className={s.pinned}><NoteItem note={n} onChanged={load} /></div>)}
+                {pinTo === seg.id && (
+                  <div className={s.pinned}>
+                    <NoteEditor placeholder={`Note at ${seg.clock}`} autoFocus onCancel={() => setPinTo(null)}
+                      onSave={t => api.addNote(d.id, t, seg.startS).then(() => { setPinTo(null); load() })} />
+                  </div>
+                )}
                 </div>
               )
             })}
@@ -237,7 +266,7 @@ export function ConfirmButton({ label, confirm, onConfirm }: { label: string; co
     : <button className={ui.danger} onClick={() => setArmed(true)}>{label}</button>
 }
 
-function NameSpeaker({ speaker, people, onClose, onSaved }: { speaker: SpeakerView; people: Person[]; onClose: () => void; onSaved: () => void }) {
+export function NameSpeaker({ speaker, people, onClose, onSaved }: { speaker: SpeakerView; people: Person[]; onClose: () => void; onSaved: () => void }) {
   const [name, setName] = useState('')
   const [addToLibrary, setAdd] = useState(true)
   const [busy, setBusy] = useState(false)

@@ -70,8 +70,10 @@ public class PostMeetingJob implements JobWorker.Handler {
 	@Override
 	public void run(Jobs.Job job, JobWorker worker) throws Exception {
 		long meetingId = job.meetingId(), convId = job.conversationId(), recId = job.recordingId();
-		var m = db.sql("SELECT audio_mode, capture_files::text, title FROM meeting WHERE id = :id").param("id", meetingId)
-				.query((rs, i) -> new String[] { rs.getString(1), rs.getString(2), rs.getString(3) }).single();
+		var m = db.sql("""
+				SELECT m.audio_mode, COALESCE(c.capture_files, m.capture_files)::text, m.title, c.part
+				FROM meeting m JOIN conversation c ON c.id = :c WHERE m.id = :id""").param("id", meetingId).param("c", convId)
+				.query((rs, i) -> new String[] { rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4) }).single();
 		String mode = m[0];
 		JsonNode files = json.readTree(m[1]);
 		String language = db.sql("SELECT language FROM recording WHERE id = :id").param("id", recId).query(String.class).single();
@@ -79,6 +81,10 @@ public class PostMeetingJob implements JobWorker.Handler {
 		Files.createDirectories(work);
 		String stage = db.sql("SELECT stage FROM conversation WHERE id = :id").param("id", convId).query(String.class).single();
 
+		if ("live".equals(stage) && !"post_meeting_full".equals(job.type())) {
+			finishFromLive(job, meetingId, convId, recId, mode, files, "1".equals(m[3]) ? m[2] : m[2] + " (continued)", day);
+			return;
+		}
 		if ("live".equals(stage)) {
 			jobs(job, "transcribe");
 			var channelWork = new LinkedHashMap<String, String>();
@@ -132,15 +138,78 @@ public class PostMeetingJob implements JobWorker.Handler {
 		}
 		// Recorder conversations that overlap this meeting are now duplicates of it (A-13).
 		db.sql("""
-				UPDATE conversation c SET duplicate_of_meeting_id = :m FROM meeting m, recording r
-				WHERE m.id = :m AND r.id = c.recording_id AND r.source_type = 'recorder' AND c.duplicate_of_meeting_id IS NULL
-				  AND LEAST(m.ended_at, c.started_at + make_interval(secs => c.end_offset_s - c.start_offset_s)) - GREATEST(m.started_at, c.started_at)
-				      >= 0.5 * LEAST(m.ended_at - m.started_at, make_interval(secs => c.end_offset_s - c.start_offset_s))""")
-				.param("m", meetingId).update();
+				UPDATE conversation c SET duplicate_of_meeting_id = :m FROM conversation p, recording r
+				WHERE p.id = :part AND r.id = c.recording_id AND r.source_type = 'recorder' AND c.duplicate_of_meeting_id IS NULL
+				  AND LEAST(p.started_at + make_interval(secs => p.end_offset_s), c.started_at + make_interval(secs => c.end_offset_s - c.start_offset_s))
+				      - GREATEST(p.started_at, c.started_at)
+				      >= 0.5 * LEAST(make_interval(secs => p.end_offset_s), make_interval(secs => c.end_offset_s - c.start_offset_s))""")
+				.param("m", meetingId).param("part", convId).update();
 		db.sql("UPDATE meeting SET status = 'done' WHERE id = :id").param("id", meetingId).update();
 		db.sql("UPDATE recording SET status = 'done' WHERE id = :id").param("id", recId).update();
 		exporter.exportDay(day);
 		log.info("event=post_meeting_done meeting={}", meetingId);
+	}
+
+	/**
+	 * The default after Stop (owner decision, 2026-10-19: no slow re-run): the live transcript is
+	 * final, the rolling summary becomes the meeting's summary, and only playback audio, the last
+	 * index entries and the export are made. Takes seconds.
+	 */
+	private void finishFromLive(Jobs.Job job, long meetingId, long convId, long recId, String mode, JsonNode files, String title,
+			LocalDate day) throws Exception {
+		jobs(job, "finish");
+		var inputs = new ArrayList<String>();
+		files.properties().forEach(e -> {
+			if (Files.exists(Path.of(e.getValue().asString()))) {
+				inputs.add(e.getValue().asString());
+			}
+		});
+		double duration = db.sql("SELECT COALESCE(duration_s, 0) FROM recording WHERE id = :id").param("id", recId).query(Double.class).single();
+		if (!inputs.isEmpty()) {
+			db.sql("UPDATE recording SET work_path = :w WHERE id = :id").param("w", mix(meetingId, inputs)).param("id", recId).update();
+		}
+		db.sql("UPDATE segment SET live = false WHERE conversation_id = :c").param("c", convId).update();
+		matcher.match(convId);
+		db.sql("UPDATE conversation SET end_offset_s = GREATEST(end_offset_s, :d) WHERE id = :id").param("d", duration).param("id", convId).update();
+		if ("mic_system".equals(mode) && !matcher.hasMeVoiceprint()) {
+			long me = people.meId();
+			db.sql("UPDATE speaker_cluster SET person_id = :p WHERE conversation_id = :c AND channel = 'mic' AND person_id IS NULL")
+					.param("p", me).param("c", convId).update();
+		}
+		String rolling = db.sql("SELECT rolling_summary::text FROM meeting WHERE id = :id").param("id", meetingId).query(String.class)
+				.optional().orElse(null);
+		if (rolling != null) {
+			JsonNode r = json.readTree(rolling);
+			var bullets = new ArrayList<String>();
+			r.path("summary").forEach(b -> bullets.add(b.asString()));
+			var topics = new ArrayList<String>();
+			r.path("topics").forEach(t -> topics.add(t.asString()));
+			// The user's title wins; an untitled meeting is named after its first topic.
+			boolean continued = title != null && title.endsWith(" (continued)");
+			String base = continued ? title.substring(0, title.length() - " (continued)".length()) : title;
+			String named = base != null && !"Meeting".equals(base) ? base : topics.isEmpty() ? "Meeting" : topics.getFirst();
+			String useTitle = continued ? named + " (continued)" : named;
+			db.sql("UPDATE conversation SET title = :t, summary = CAST(:s AS jsonb), topics = CAST(:tp AS jsonb) WHERE id = :id")
+					.param("t", useTitle).param("s", json.writeValueAsString(java.util.Map.of("bullets", bullets)))
+					.param("tp", json.writeValueAsString(topics)).param("id", convId).update();
+			db.sql("DELETE FROM action_item WHERE conversation_id = :c").param("c", convId).update();
+			for (JsonNode a : r.path("action_items")) {
+				String text = a.path("text").asString("");
+				if (!text.isBlank()) {
+					String owner = a.path("owner").isString() ? a.path("owner").asString() + ": " : "";
+					db.sql("INSERT INTO action_item (conversation_id, text) VALUES (:c, :t)").param("c", convId).param("t", owner + text).update();
+				}
+			}
+		} else {
+			// Too short for a rolling summary: one quick enrichment call.
+			enricher.enrich(convId);
+		}
+		indexer.indexConversation(convId);
+		db.sql("UPDATE conversation SET stage = 'exported', status = 'done' WHERE id = :id").param("id", convId).update();
+		db.sql("UPDATE meeting SET status = 'done' WHERE id = :id").param("id", meetingId).update();
+		db.sql("UPDATE recording SET status = 'done' WHERE id = :id").param("id", recId).update();
+		exporter.exportDay(day);
+		log.info("event=meeting_finished meeting={} from=live", meetingId);
 	}
 
 	private void jobs(Jobs.Job job, String stage) {
@@ -186,7 +255,7 @@ public class PostMeetingJob implements JobWorker.Handler {
 	}
 
 	private String mix(long meetingId, List<String> inputs) throws Exception {
-		String out = work.resolve("meeting-" + meetingId + ".flac").toString();
+		String out = work.resolve("meeting-" + meetingId + "-" + System.nanoTime() + ".flac").toString();
 		if (inputs.size() == 1) {
 			Files.copy(Path.of(inputs.getFirst()), Path.of(out), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
 			return out;

@@ -1,4 +1,5 @@
 """ASREngine (PRD §10.2): mlx-whisper on Apple Silicon."""
+import math
 import threading
 from dataclasses import dataclass, field
 
@@ -51,14 +52,20 @@ class MlxWhisper(ASREngine):
                 hallucination_silence_threshold=2.0,
             )
         segments = []
+
+        def num(v, default):
+            # Whisper occasionally yields NaN scores; JSON cannot carry them (a 500 after a long run).
+            return default if v is None or not math.isfinite(v) else v
+
         for s in result.get("segments", []):
             text = s["text"].strip()
             if not text:
                 continue
-            words = [{"w": w["word"].strip(), "s": round(w["start"], 3), "e": round(w["end"], 3),
-                      "p": round(w.get("probability", 0.0), 3)} for w in s.get("words", []) if w["word"].strip()]
+            words = [{"w": w["word"].strip(), "s": round(num(w["start"], s["start"]), 3), "e": round(num(w["end"], s["end"]), 3),
+                      "p": round(num(w.get("probability"), 0.0), 3)} for w in s.get("words", []) if w["word"].strip()]
             segments.append(Segment(round(s["start"], 3), round(s["end"], 3), text, words,
-                                    s.get("avg_logprob", 0.0), s.get("no_speech_prob", 0.0), s.get("compression_ratio", 0.0)))
+                                    num(s.get("avg_logprob"), -1.0), num(s.get("no_speech_prob"), 0.0),
+                                    num(s.get("compression_ratio"), 0.0)))
         return segments
 
 

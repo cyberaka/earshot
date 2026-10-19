@@ -20,9 +20,11 @@ import org.springframework.web.multipart.MultipartFile;
 public class PeopleController {
 
 	private final PeopleService people;
+	private final com.earshot.api.meeting.MeetingService meetings;
 
-	public PeopleController(PeopleService people) {
+	public PeopleController(PeopleService people, com.earshot.api.meeting.MeetingService meetings) {
 		this.people = people;
+		this.meetings = meetings;
 	}
 
 	@GetMapping("/people")
@@ -39,6 +41,8 @@ public class PeopleController {
 			throw new IllegalArgumentException("Give a person or a name.");
 		}
 		people.assign(id, req.personId(), req.name(), req.me(), req.addToLibrary());
+		// Naming a speaker during a meeting updates the live view at once.
+		meetings.onSpeakerChanged(id);
 		return Map.of("ok", true);
 	}
 

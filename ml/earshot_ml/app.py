@@ -42,7 +42,7 @@ class Span(BaseModel):
 
 
 class Diarize(Span):
-    threshold: float = 0.55
+    threshold: float = 0.68
 
 
 class Transcribe(Span):
@@ -61,6 +61,7 @@ class Embed(BaseModel):
 class LiveStart(BaseModel):
     language: str | None = "en"
     max_segment_s: float = 15.0
+    seeds: dict[str, list[dict]] = {}  # channel -> [{"label", "embedding"}] from earlier parts
 
 
 @app.get("/ml/health")
@@ -154,7 +155,7 @@ def embed(req: Embed):
 
 @app.post("/ml/live/{session_id}/start", dependencies=[Depends(check_secret)])
 async def live_start(session_id: str, req: LiveStart):
-    live.start(session_id, req.language or "en", req.max_segment_s, asyncio.get_running_loop())
+    live.start(session_id, req.language or "en", req.max_segment_s, asyncio.get_running_loop(), req.seeds)
     return {"ok": True}
 
 

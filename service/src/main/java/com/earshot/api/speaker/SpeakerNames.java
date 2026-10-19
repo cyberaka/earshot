@@ -27,12 +27,18 @@ public class SpeakerNames {
 	/** Cluster id -> speaker for one conversation. Unnamed clusters are "Speaker N" by first appearance. */
 	public Map<Long, Speaker> forConversation(long conversationId) {
 		var rows = db.sql("""
-				SELECT sc.id, sc.channel, p.id AS person_id, p.name, COALESCE(p.is_me, false) AS is_me,
+				SELECT sc.id, sc.channel, p.id AS person_id, p.name, COALESCE(p.is_me, false) AS is_me, sc.origin_cluster_id,
+				       (SELECT o.conversation_id FROM speaker_cluster o WHERE o.id = sc.origin_cluster_id) AS origin_conversation,
 				       (SELECT min(s.start_s) FROM segment s WHERE s.speaker_cluster_id = sc.id) AS first_s
 				FROM speaker_cluster sc LEFT JOIN person p ON p.id = sc.person_id
 				WHERE sc.conversation_id = :c ORDER BY first_s NULLS LAST, sc.id""").param("c", conversationId).query().listOfRows();
 		Map<Long, Speaker> out = new HashMap<>();
-		int n = 0;
+		// In a later part of a resumed meeting, new voices continue the earlier parts' numbering.
+		int n = db.sql("""
+				SELECT count(DISTINCT COALESCE(sc.origin_cluster_id, sc.id)) FROM speaker_cluster sc
+				JOIN conversation c ON c.id = sc.conversation_id JOIN conversation me ON me.id = :c
+				WHERE me.meeting_id IS NOT NULL AND c.meeting_id = me.meeting_id AND c.part < me.part AND sc.person_id IS NULL""")
+				.param("c", conversationId).query(Integer.class).single();
 		for (var r : rows) {
 			long id = ((Number) r.get("id")).longValue();
 			boolean me = (boolean) r.get("is_me");
@@ -41,6 +47,11 @@ public class SpeakerNames {
 				name = "Me";
 			} else if (r.get("name") != null) {
 				name = (String) r.get("name");
+			} else if (r.get("origin_cluster_id") != null && r.get("origin_conversation") != null) {
+				// Unnamed, but heard in an earlier part of the meeting: keep that part's "Speaker N".
+				var origin = forConversation(((Number) r.get("origin_conversation")).longValue())
+						.get(((Number) r.get("origin_cluster_id")).longValue());
+				name = origin != null ? origin.name() : "Speaker " + (++n);
 			} else {
 				name = "Speaker " + (++n);
 			}

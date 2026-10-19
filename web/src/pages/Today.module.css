@@ -87,6 +87,21 @@
 .who { flex: none; width: 92px; font-weight: 600; padding-top: 4px; overflow: hidden; text-overflow: ellipsis; }
 .text { flex: 1; min-width: 0; padding-top: 4px; }
 .footer { display: flex; justify-content: flex-end; }
+.noteBtn {
+  flex: none;
+  align-self: center;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0.55;
+}
+.line:hover .noteBtn, .noteBtn:focus-visible { opacity: 1; border-color: var(--border); }
+.pinned { margin: 4px 0 8px 126px; }
+@media (max-width: 760px) { .pinned { margin-left: 0; } }
 
 @media (max-width: 760px) {
   .timeline { max-width: none; }

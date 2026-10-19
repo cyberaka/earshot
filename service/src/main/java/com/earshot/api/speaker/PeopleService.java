@@ -89,7 +89,12 @@ public class PeopleService {
 	@Transactional
 	public void assign(long clusterId, Long personId, String newName, boolean me, boolean addToLibrary) {
 		long target = me ? meId() : personId != null ? personId : personNamed(newName.trim());
-		db.sql("UPDATE speaker_cluster SET person_id = :p, manual = true WHERE id = :id").param("p", target).param("id", clusterId).update();
+		// The same speaker in every part of a resumed meeting: their first cluster and its continuations.
+		db.sql("""
+				UPDATE speaker_cluster SET person_id = :p, manual = true
+				WHERE id = :id OR id = (SELECT origin_cluster_id FROM speaker_cluster WHERE id = :id)
+				   OR origin_cluster_id = COALESCE((SELECT origin_cluster_id FROM speaker_cluster WHERE id = :id), :id)""")
+				.param("p", target).param("id", clusterId).update();
 		if (addToLibrary) {
 			db.sql("""
 					INSERT INTO voiceprint (person_id, embedding, source)

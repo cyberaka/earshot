@@ -136,10 +136,14 @@ public class AskService {
 	}
 
 	private Context meetingContext(long meetingId, Ask req) {
-		var meeting = db.sql("SELECT m.pre_context, m.rolling_summary::text, c.id FROM meeting m JOIN conversation c ON c.meeting_id = m.id WHERE m.id = :id")
-				.param("id", meetingId).query((rs, i) -> new Object[] { rs.getString(1), rs.getString(2), rs.getLong(3) }).single();
-		long convId = (long) meeting[2];
+		var meeting = db.sql("SELECT m.pre_context, m.rolling_summary::text FROM meeting m WHERE m.id = :id")
+				.param("id", meetingId).query((rs, i) -> new Object[] { rs.getString(1), rs.getString(2) }).single();
+		// A resumed meeting has several parts: search all of them; the recent verbatim comes from the latest.
+		List<Long> parts = db.sql("SELECT id FROM conversation WHERE meeting_id = :id ORDER BY part").param("id", meetingId).query(Long.class).list();
+		long convId = parts.getLast();
 		var detail = conversations.detail(convId);
+		var allNotes = new ArrayList<ConversationService.NoteView>();
+		parts.forEach(p -> allNotes.addAll(conversations.notes(p)));
 		var segs = detail.segments();
 		var evidence = new ArrayList<Evidence>();
 		var seen = new LinkedHashMap<Long, Integer>();
@@ -147,7 +151,7 @@ public class AskService {
 		String q = action.equals("was_discussed") ? req.question() : label(req);
 		// 1. Retrieved segments (hybrid), the evidence for recall questions.
 		if (!action.equals("last5") && !action.equals("suggest")) {
-			for (var h : search.search(q, new SearchService.Scope(null, null, List.of(convId)), 10)) {
+			for (var h : search.search(q, new SearchService.Scope(null, null, parts), 10)) {
 				seen.computeIfAbsent(h.segmentId(), k -> {
 					evidence.add(new Evidence(evidence.size() + 1, h.recordingId(), h.conversationId(), h.startS(), h.endS(), h.clock(),
 							h.speaker(), h.text()));
@@ -166,7 +170,7 @@ public class AskService {
 		}
 		String summary = meeting[1] == null ? "" : summaryText(json.readTree((String) meeting[1]));
 		String pre = meeting[0] == null ? "" : (String) meeting[0];
-		return build(req, evidence, summary, pre, "meeting", detail.title());
+		return build(req, evidence, summary, pre, "meeting", detail.title(), notesText(allNotes));
 	}
 
 	private Context rangeContext(LocalDate from, LocalDate to, Ask req) {
@@ -194,7 +198,18 @@ public class AskService {
 		}
 		String summaries = sb.isEmpty() ? "" : "Summaries of the conversations the evidence comes from:\n" + sb;
 		String scopeLabel = from.equals(to) ? "the day " + from : "the days " + from + " to " + to;
-		return build(req, evidence, summaries + (titles.isEmpty() ? "" : "\nAll conversations in scope:\n" + titles), "", scopeLabel, null);
+		var notes = new StringBuilder();
+		for (var day = from; !day.isAfter(to) && notes.length() < 2000; day = day.plusDays(1)) {
+			for (var c : conversations.day(day).conversations()) {
+				var ns = conversations.notes(c.id());
+				if (!ns.isEmpty()) {
+					notes.append("On \"").append(c.title()).append("\" (").append(day).append(' ').append(c.startClock()).append("):\n")
+							.append(notesText(ns));
+				}
+			}
+		}
+		return build(req, evidence, summaries + (titles.isEmpty() ? "" : "\nAll conversations in scope:\n" + titles), "", scopeLabel, null,
+				notes.toString());
 	}
 
 	static String summaryText(JsonNode s) {
@@ -216,7 +231,14 @@ public class AskService {
 		return sb.toString();
 	}
 
-	private Context build(Ask req, List<Evidence> evidence, String summary, String preContext, String scopeLabel, String title) {
+	static String notesText(List<ConversationService.NoteView> notes) {
+		var sb = new StringBuilder();
+		notes.forEach(n -> sb.append("- ").append(n.clock() == null ? "" : "(at " + n.clock() + ") ").append(n.text().replace("\n", " ")).append('\n'));
+		return sb.toString();
+	}
+
+	private Context build(Ask req, List<Evidence> evidence, String summary, String preContext, String scopeLabel, String title,
+			String userNotes) {
 		int budget = budgetChars();
 		var ev = new StringBuilder();
 		for (var e : evidence) {
@@ -230,6 +252,9 @@ public class AskService {
 		// Trimmed in this order (PRD §6.5): pre-meeting context first, then the summary.
 		String sum = summary.length() > left * 0.6 ? summary.substring(0, (int) (left * 0.6)) : summary;
 		left -= sum.length();
+		// The user's notes are their own words: kept small, and never treated as evidence.
+		String notes = userNotes.length() > 1500 ? userNotes.substring(0, 1500) : userNotes;
+		left -= notes.length();
 		String pre = preContext.length() > Math.max(0, left) ? preContext.substring(0, Math.max(0, left)) : preContext;
 		String action = req.action() == null ? "" : req.action();
 		String task = switch (action) {
@@ -245,10 +270,12 @@ public class AskService {
 		};
 		String system = """
 				You answer questions about %s%s using ONLY the numbered transcript evidence and the notes below.
-				After each factual claim, cite the evidence line number in square brackets, e.g. [3]. Never cite the summary or notes. If the evidence does not contain the answer,
+				After each factual claim, cite the evidence line number in square brackets, e.g. [3]. Never cite the summary or the user's notes. If the evidence does not contain the answer,
 				say plainly that it was not discussed. Be brief.""".formatted(scopeLabel, title == null ? "" : " \"" + title + "\"");
 		String user = (pre.isBlank() ? "" : "Pre-meeting context (agenda/notes):\n" + pre + "\n\n")
-				+ (sum.isBlank() ? "" : "Notes (navigation only, not evidence):\n" + sum + "\n\n")
+				+ (sum.isBlank() ? "" : "Summary (navigation only, not evidence):\n" + sum + "\n\n")
+				+ (notes.isBlank() ? "" : "The user's own notes (written by the user, NOT said in the conversation; use them to understand "
+						+ "the user's view, say \"your note\" when you rely on one, never cite them):\n" + notes + "\n")
 				+ "Transcript evidence:\n" + (ev.isEmpty() ? "(none)\n" : ev) + "\nTask: " + task;
 		return new Context(List.of(Message.system(system), Message.user(user)), evidence);
 	}

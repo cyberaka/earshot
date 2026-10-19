@@ -53,6 +53,12 @@ public class MarkdownExporter {
 					d.actionItems().forEach(a -> md.append("- [").append(a.done() ? "x" : " ").append("] ")
 							.append(a.owner() == null ? "" : a.owner() + ": ").append(a.text()).append('\n'));
 				}
+				if (!d.notes().isEmpty()) {
+					md.append("**Notes**\n");
+					// Notes are Markdown: continuation lines are indented so lists and quotes stay inside the bullet.
+					d.notes().forEach(n -> md.append("- ").append(n.clock() == null ? "" : "(at " + n.clock() + ") ")
+							.append(n.text().strip().replace("\n", "\n  ")).append('\n'));
+				}
 				md.append("**Transcript**\n");
 				d.segments().forEach(s -> md.append("- **").append(s.clock()).append(' ').append(s.speaker()).append(":** ")
 						.append(s.text()).append('\n'));

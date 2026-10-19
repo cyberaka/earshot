@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
-import { api, nearest, speakerColor, type Citation, type Devices, type MeetingSummary, type MeetingView, type SegmentView } from '../api'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { api, nearest, speakerColor, type Citation, type Devices, type MeetingSummary, type MeetingView, type NoteView, type Person, type SegmentView, type SpeakerView } from '../api'
 import { Answer, useAsk } from '../components/AskBox'
+import { NoteEditor, NoteItem } from '../components/Notes'
+import { NameSpeaker } from './Today'
 import ui from '../components/ui.module.css'
 import s from './Meeting.module.css'
 
@@ -12,12 +14,15 @@ export default function Meeting() {
 
 const MODES = [
   { value: 'mic_system', label: 'Online call', hint: 'Mic = you, system audio (BlackHole) = others. Needs headphones.' },
-  { value: 'mic', label: 'In-person', hint: 'Room audio through the mic. Speakers are separated after the meeting.' },
+  { value: 'mic', label: 'In-person', hint: 'Room audio through the mic. Speakers are separated live; click one to name them.' },
   { value: 'system', label: 'Listen only', hint: 'System audio only: remote participants.' },
 ]
 
 function StartMeeting() {
   const navigate = useNavigate()
+  const [params] = useSearchParams()
+  const resumeId = params.get('resume') ? Number(params.get('resume')) : null
+  const [resumeTitle, setResumeTitle] = useState<string | null>(null)
   const [devices, setDevices] = useState<Devices | null>(null)
   const [active, setActive] = useState<number | ''>('')
   const [past, setPast] = useState<{ id: number; title: string; started_at: string; status: string; audio_mode: string }[]>([])
@@ -33,6 +38,8 @@ function StartMeeting() {
   const [systemFile, setSystemFile] = useState('')
   const [override, setOverride] = useState(false)
   const [busy, setBusy] = useState(false)
+  // Resuming defaults to the audio source the meeting last used.
+  useEffect(() => { if (resumeId) api.meeting(resumeId).then(mv => { setResumeTitle(mv.title); setMode(mv.audio_mode) }).catch(() => {}) }, [resumeId])
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -40,7 +47,8 @@ function StartMeeting() {
       setDevices(p.devices)
       setActive(p.activeMeetingId)
       // An online call needs mic + system audio: preselect a multi-channel (Aggregate) input if there is one.
-      const multi = p.devices.inputs.filter(d => d.channels >= 2)
+      // BlackHole alone has two channels but no mic, so it is never the pick.
+      const multi = p.devices.inputs.filter(d => d.channels >= 2 && !/blackhole/i.test(d.name))
       const pick = multi.find(d => /aggregate/i.test(d.name)) ?? multi[0]
       if (pick) setDevice(pick.name)
     }).catch(e => setError(`Capture process unreachable: ${e}`))
@@ -49,10 +57,10 @@ function StartMeeting() {
 
   const selected = devices?.inputs.find(d => d.name === (device || devices.default_input))
   const speakers = mode === 'mic_system' && !replay && devices?.output_uses_speakers === true
-  const hasMulti = !!devices?.inputs.some(d => d.channels >= 2)
+  const hasMulti = !!devices?.inputs.some(d => d.channels >= 2 && !/blackhole/i.test(d.name))
   // Checked here so Start never opens a device that cannot work (capture refuses it too).
   const channelProblem = !replay && devices && selected && (mode === 'mic_system'
-    ? (selected.channels < 2 ? 'twoChannels' : Math.max(micChannel, systemChannel) >= selected.channels ? 'range' : null)
+    ? (/blackhole/i.test(selected.name) ? 'blackholeOnly' : selected.channels < 2 ? 'twoChannels' : Math.max(micChannel, systemChannel) >= selected.channels ? 'range' : null)
     : mode === 'mic' && micChannel >= selected.channels ? 'range' : null)
   const blocked = (speakers && !override) || !!channelProblem
 
@@ -68,7 +76,7 @@ function StartMeeting() {
       const body: Record<string, unknown> = { title, audioMode: mode, preContext, language, source: replay ? 'file' : 'device' }
       if (replay) body.files = { mic: micFile, system: systemFile }
       else { body.device = device || null; body.micChannel = micChannel; body.systemChannel = mode === 'system' ? 0 : systemChannel }
-      const r = await api.startMeeting(body)
+      const r = resumeId ? await api.resumeMeeting(resumeId, body) : await api.startMeeting(body)
       navigate(`/meeting/${r.meetingId}`)
     } catch (err) {
       setError(String(err))
@@ -82,12 +90,15 @@ function StartMeeting() {
 
   return (
     <>
-      <h1 className={s.pageTitle}>Start a meeting</h1>
+      <h1 className={s.pageTitle}>{resumeId ? `Resume “${resumeTitle ?? '…'}”` : 'Start a meeting'}</h1>
+      {resumeId && <p className={ui.muted} style={{ margin: 0 }}>Recording continues in the same meeting as a new part. People heard earlier keep their names.</p>}
       <form className={s.setup} onSubmit={start}>
         <section className={ui.card}>
-          <label className={ui.field}>Title (optional)
-            <input className={ui.input} value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Vendor review" />
-          </label>
+          {!resumeId && (
+            <label className={ui.field}>Title (optional)
+              <input className={ui.input} value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Vendor review" />
+            </label>
+          )}
           <fieldset className={s.modes}>
             <legend className={ui.sectionLabel}>Audio source</legend>
             {MODES.map(m => (
@@ -125,6 +136,9 @@ function StartMeeting() {
                 : 'No such device on this Mac yet: install BlackHole and create an Aggregate Device (mic + BlackHole) as in the setup guide. Until then, use In-person.'}
             </div>
           )}
+          {channelProblem === 'blackholeOnly' && (
+            <div className={ui.error}>BlackHole carries only the call's audio, not your mic. Create an Aggregate Device (your mic + BlackHole 2ch) in Audio MIDI Setup and pick that.</div>
+          )}
           {channelProblem === 'range' && <div className={ui.error}>“{selected!.name}” has {selected!.channels} channel{selected!.channels === 1 ? '' : 's'}: channel numbers start at 0.</div>}
           {speakers && (
             <div className={ui.error}>
@@ -146,18 +160,22 @@ function StartMeeting() {
           </label>
         </section>
         <section className={ui.card}>
-          <label className={ui.field}>Agenda or notes (optional)
-            <textarea className={ui.textarea} rows={8} value={preContext} onChange={e => setPreContext(e.target.value)} placeholder="Paste the agenda, one item per line…" />
-          </label>
-          <label className={ui.field}>Or upload .md, .txt or .pdf
-            <input type="file" accept=".md,.txt,.pdf" onChange={e => e.target.files?.[0] && upload(e.target.files[0])} />
-          </label>
+          {!resumeId && (
+            <>
+              <label className={ui.field}>Agenda or notes (optional)
+                <textarea className={ui.textarea} rows={8} value={preContext} onChange={e => setPreContext(e.target.value)} placeholder="Paste the agenda, one item per line…" />
+              </label>
+              <label className={ui.field}>Or upload .md, .txt or .pdf
+                <input type="file" accept=".md,.txt,.pdf" onChange={e => e.target.files?.[0] && upload(e.target.files[0])} />
+              </label>
+            </>
+          )}
           {error && <div className={ui.error}>{error}</div>}
-          <button className={ui.live} disabled={busy || blocked}><span className={s.whiteDot} />{busy ? 'Starting…' : 'Start recording'}</button>
+          <button className={ui.live} disabled={busy || blocked}><span className={s.whiteDot} />{busy ? 'Starting…' : resumeId ? 'Resume recording' : 'Start recording'}</button>
           <span className={ui.muted}>Audio stays on this Mac. Answers come only from what is said.</span>
         </section>
       </form>
-      {past.length > 0 && (
+      {!resumeId && past.length > 0 && (
         <section className={ui.card}>
           <h2 className={s.h2}>Past meetings</h2>
           <div className={s.pastList}>
@@ -172,6 +190,19 @@ function StartMeeting() {
       )}
     </>
   )
+}
+
+/** "Resumed 20 Oct, 10:05 · after 1 day" for the divider before a part. */
+function resumedLabel(parts: MeetingView['parts'], part: number) {
+  const p = parts.find(x => x.part === part)
+  const prev = parts.find(x => x.part === part - 1)
+  if (!p) return 'Resumed'
+  const start = new Date(p.started_at)
+  const when = start.toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+  if (!prev) return `Resumed ${when}`
+  const gapMin = Math.max(0, (start.getTime() - new Date(prev.started_at).getTime()) / 60000 - prev.duration_s / 60)
+  const gap = gapMin < 60 ? `${Math.round(gapMin)} min` : gapMin < 1440 ? `${Math.round(gapMin / 60)} h` : `${Math.round(gapMin / 1440)} day${Math.round(gapMin / 1440) === 1 ? '' : 's'}`
+  return `Resumed ${when} · after ${gap}`
 }
 
 function localDate(t: string | number) {
@@ -190,6 +221,10 @@ function LiveMeeting({ id }: { id: number }) {
   const navigate = useNavigate()
   const [m, setM] = useState<MeetingView | null>(null)
   const [segments, setSegments] = useState<SegmentView[]>([])
+  const [notes, setNotes] = useState<NoteView[]>([])
+  const [speakers, setSpeakers] = useState<SpeakerView[]>([])
+  const [people, setPeople] = useState<Person[]>([])
+  const [naming, setNaming] = useState<SpeakerView | null>(null)
   const [summary, setSummary] = useState<MeetingSummary | null>(null)
   const [status, setStatus] = useState<LiveStatus | null>(null)
   const [stopping, setStopping] = useState(false)
@@ -198,6 +233,7 @@ function LiveMeeting({ id }: { id: number }) {
   const [q, setQ] = useState('')
   const [discussed, setDiscussed] = useState('')
   const listRef = useRef<HTMLDivElement>(null)
+  const currentPart = useRef(1)
   const rows = useRef<Map<number, HTMLDivElement>>(new Map())
   const follow = useRef(true)
   const { items, setItems, busy, run } = useAsk('meeting', String(id))
@@ -205,10 +241,18 @@ function LiveMeeting({ id }: { id: number }) {
   const reload = useCallback(async () => {
     const mv = await api.meeting(id)
     setM(mv)
+    currentPart.current = mv.parts.length ? mv.parts[mv.parts.length - 1].part : 1
     setSummary(mv.summary)
-    const conv = await api.conversation(mv.conversation_id)
-    setSegments(conv.segments)
+    // A resumed meeting has several parts: join their transcripts, notes and speakers.
+    const convs = await Promise.all(mv.parts.map(p => api.conversation(p.conversation_id)))
+    setSegments(convs.flatMap((c, i) => c.segments.map(x => ({ ...x, part: mv.parts[i].part }))))
+    setNotes(convs.flatMap(c => c.notes))
+    const latest = convs[convs.length - 1]
+    const seen = new Set(latest.speakers.map(x => x.name))
+    setSpeakers([...latest.speakers, ...convs.slice(0, -1).flatMap(c => c.speakers).filter(x => !seen.has(x.name) && seen.add(x.name))])
   }, [id])
+
+  useEffect(() => { api.people().then(p => setPeople(p.people)).catch(() => {}) }, [naming])
 
   useEffect(() => {
     reload().catch(e => setError(String(e)))
@@ -222,7 +266,17 @@ function LiveMeeting({ id }: { id: number }) {
     ws.onmessage = ev => {
       const e = JSON.parse(ev.data)
       if (e.type === 'discarded') { navigate('/meeting'); return }
-      if (e.type === 'segment') setSegments(prev => [...prev, e.segment].sort((a, b) => a.startS - b.startS))
+      if (e.type === 'segment') setSegments(prev => [...prev, { ...e.segment, part: currentPart.current }])
+      else if (e.type === 'speakers') {
+        // The live part's speakers, plus earlier parts' speakers not heard again yet.
+        const live: SpeakerView[] = e.speakers
+        setSpeakers(prev => [...live, ...prev.filter(p => !live.some(n => n.clusterId === p.clusterId || n.name === p.name))])
+      }
+      else if (e.type === 'relabel') {
+        // Regrouping moved some lines to another speaker: update them in place.
+        const moved = new Map<number, number>(e.changes.map((c: { segmentId: number; clusterId: number }) => [c.segmentId, c.clusterId]))
+        setSegments(prev => prev.map(x => (moved.has(x.id) ? { ...x, clusterId: moved.get(x.id)! } : x)))
+      }
       else if (e.type === 'status') setStatus(e)
       else if (e.type === 'summary') setSummary(e.summary)
       else if (e.type === 'stopped') { setStatus(null); reload() }
@@ -266,6 +320,7 @@ function LiveMeeting({ id }: { id: number }) {
   }
 
   if (!m) return <span className={ui.muted}>{error ?? 'Loading…'}</span>
+  const speakerById = new Map(speakers.map(sp => [sp.clusterId, sp]))
   const elapsed = status?.elapsedS ?? (m.ended_at ? (new Date(m.ended_at).getTime() - new Date(m.started_at).getTime()) / 1000 : 0)
   const modeLabel = m.audio_mode === 'mic_system' ? 'Mic + System' : m.audio_mode === 'mic' ? 'Mic only' : 'System only'
   const hasAgenda = !!m.pre_context?.trim()
@@ -280,11 +335,14 @@ function LiveMeeting({ id }: { id: number }) {
         <div className={s.liveChips}>
           {m.live
             ? <span className={s.recChip}><span className={s.recDot} /><span className="mono">{clockOf(elapsed)}</span></span>
-            : <span className={s.neutralChip}>{m.status === 'done' ? 'Final transcript' : m.status === 'failed' ? 'Failed' : 'Post-meeting pass running…'}</span>}
+            : <span className={s.neutralChip}>{m.status === 'done' ? 'Final transcript' : m.status === 'failed' ? 'Failed' : 'Finishing…'}</span>}
           {m.live && status && <span className={status.lagS > 10 ? s.badChip : s.neutralChip}>Lag {status.lagS.toFixed(1)} s</span>}
           {m.live
             ? <button className={ui.dark} onClick={stop} disabled={stopping}><span className={s.stopSq} />{stopping ? 'Stopping…' : 'Stop'}</button>
-            : m.status === 'done' && <Link className={ui.btn} to={`/day/${localDate(m.started_at)}/${m.conversation_id}`}>Open in daily notes</Link>}
+            : m.status === 'done' && <>
+              <Link className={ui.btn} to={`/day/${m.parts[m.parts.length - 1]?.local_date ?? localDate(m.started_at)}/${m.conversation_id}`}>Open in daily notes</Link>
+              <Link className={ui.live} to={`/meeting?resume=${m.id}`}><span className={s.whiteDot} />Resume</Link>
+            </>}
         </div>
       </header>
       {((m.live && status?.warning) || error) && <div className={ui.error}>{(m.live && status?.warning) || error}</div>}
@@ -293,25 +351,51 @@ function LiveMeeting({ id }: { id: number }) {
         <section aria-label="Transcript" className={s.transcript}>
           <div className={s.panelHead}>
             <h2 className={s.h2}>{m.live ? 'Live transcript' : 'Transcript'}</h2>
-            {m.audio_mode === 'mic_system' && m.live && (
-              <span className={s.legend}>
-                <span><i style={{ background: 'var(--me)' }} />Me · mic</span>
-                <span><i style={{ background: 'var(--others)' }} />Others · system</span>
-              </span>
-            )}
           </div>
+          {speakers.length > 0 && (
+            <div className={s.speakerBar}>
+              <span className={ui.muted}>Speakers</span>
+              {[...speakers].sort((a, b) => b.speechS - a.speechS).map(sp => {
+                const col = speakerColor(sp.key)
+                const unnamed = sp.personId === null && !sp.isMe
+                return unnamed
+                  ? <button key={sp.clusterId} className={s.nameBtn} onClick={() => setNaming(sp)}>{sp.name} · Name</button>
+                  : <button key={sp.clusterId} className={ui.chip} style={{ background: col.bg, color: col.fg, border: 0, cursor: 'pointer' }}
+                    onClick={() => setNaming(sp)} title="Rename or reassign">{sp.name}</button>
+              })}
+              {m.live && <span className={ui.muted}>Labels settle as people talk; click to name.</span>}
+            </div>
+          )}
+          {naming && (
+            <div className={s.namingWrap}>
+              <NameSpeaker speaker={naming} people={people} onClose={() => setNaming(null)}
+                onSaved={() => { setNaming(null); if (!m.live) reload().catch(() => {}) }} />
+            </div>
+          )}
           <div className={s.lines} ref={listRef} onScroll={e => {
             const el = e.currentTarget
             follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60
           }}>
             {segments.length === 0 && <div className={ui.muted}>{m.live ? 'Listening… text appears a few seconds after each sentence.' : 'No transcript.'}</div>}
-            {segments.map(seg => (
-              <div key={seg.id} ref={el => { if (el) rows.current.set(seg.id, el) }} className={cited.has(seg.id) ? s.lineCited : s.line}>
-                <span className={s.clock}>{seg.clock}</span>
-                <span className={s.who} style={{ color: speakerColor(seg.key).fg }}>{seg.speaker}</span>
-                <span className={s.text}>{seg.text}</span>
-              </div>
-            ))}
+            {segments.map((seg, i) => {
+              // Names come from the speaker list, so naming or regrouping relabels every line at once.
+              const sp = seg.clusterId !== null ? speakerById.get(seg.clusterId) : undefined
+              const part = (seg as SegmentView & { part?: number }).part ?? 1
+              const prevPart = i > 0 ? (segments[i - 1] as SegmentView & { part?: number }).part ?? 1 : part
+              const divider = i > 0 && part !== prevPart ? m.parts.find(p => p.part === part) : undefined
+              return (
+                <div key={seg.id}>
+                {divider && <div className={s.partDivider}>{resumedLabel(m.parts, divider.part)}</div>}
+                <div ref={el => { if (el) rows.current.set(seg.id, el) }} className={cited.has(seg.id) ? s.lineCited : s.line}>
+                  <span className={s.clock}>{seg.clock}</span>
+                  {sp
+                    ? <button className={s.whoBtn} style={{ color: speakerColor(sp.key).fg }} onClick={() => setNaming(sp)} title="Name this speaker">{sp.name}</button>
+                    : <span className={s.who} style={{ color: speakerColor(seg.key).fg }}>{seg.speaker}</span>}
+                  <span className={s.text}>{seg.text}</span>
+                </div>
+                </div>
+              )
+            })}
           </div>
           {m.live && status && (
             <div className={s.resources}>
@@ -358,6 +442,18 @@ function LiveMeeting({ id }: { id: number }) {
                 )}
               </>
             )}
+          </section>
+
+          <section className={ui.card}>
+            <h2 className={s.h2}>Your notes</h2>
+            {notes.map(n => <NoteItem key={n.id} note={n} onChanged={() => reload().catch(() => {})} onJump={at => onCite({ startS: at })} />)}
+            <NoteEditor placeholder={m.live ? 'Note this moment…' : 'Add a note…'} onSave={async t => {
+              // While live, a note is pinned to the latest line, the moment the user is reacting to.
+              const anchor = m.live && segments.length ? segments[segments.length - 1].startS : null
+              await api.addNote(m.conversation_id, t, anchor)
+              const conv = await api.conversation(m.conversation_id)
+              setNotes(conv.notes)
+            }} />
           </section>
 
           <section className={ui.card}>

@@ -160,7 +160,7 @@ The user names speakers after enrichment has run, and later renames, merges, or 
 
 ### 6.3 Live speaker attribution scope
 - **v1:** channel-based Me vs Others for online calls. Room audio is unattributed while live.
-- **v1 stretch / Phase 2:** re-diarize a rolling window (e.g., the last 60–120 s) every 30 s with pyannote, and match the clusters to voiceprints. Labels may be revised as more audio arrives.
+- **Owner request, 2026-10-19:** speakers are separated live (instant labels, regrouped every 30 s) so the user can name them during the meeting. Earlier plan: re-diarize a rolling window (e.g., the last 60–120 s) every 30 s with pyannote, and match the clusters to voiceprints. Labels may be revised as more audio arrives.
 - Final attribution comes from the post-meeting pass (§6.6), which keeps the channel split where one exists.
 
 ### 6.4 Live transcription
@@ -193,13 +193,23 @@ These components are maintained continuously:
 - "Was X discussed?": retrieve up to 10 candidates with hybrid search, then one LLM call lists which candidates are relevant and answers from those. The answer is "not discussed" when none is relevant. (Fused ranks have no absolute scale, so no fixed score threshold is used.)
 - "Suggest a question" uses the summary, open agenda items, recent transcript, and gaps or ambiguities. Return 3 short candidate questions.
 
-### 6.6 Post-meeting pass
-- Runs Mode A steps 6–11 on the saved meeting audio. Ambient marking (step 7) never applies to meetings: the user chose to record them, and in System only mode Me never speaks.
-  - **Mic + System:** transcribe each channel separately. Diarize both channels and match clusters to voiceprints. On the mic channel, the cluster matching Me is Me and any other clusters are people in the room; if no Me voiceprint exists, the whole mic channel is Me.
-  - **Mic only:** diarize the room audio as in Mode A.
-  - **System only:** diarize the system channel.
-- Replace the live transcript with the final version. Q&A citations stay valid because they reference audio offsets, not segments (§9.2).
-- Add the meeting to that day's notes and markdown export.
+### 6.6 After Stop
+**Owner decision, 2026-10-19:** no slow re-run after a meeting. On Stop, within seconds:
+- the live transcript becomes the final transcript;
+- the rolling summary (decisions, action items, topics) becomes the meeting's summary;
+- the per-channel audio is joined for playback, remaining segments are indexed, and the day's markdown is exported.
+
+A full re-run (re-transcribe and re-diarize each channel, as Mode A steps 6–11) remains available as an explicit job (`post_meeting_full`) and is never started automatically.
+
+### 6.6a Resuming a meeting
+**Owner request, 2026-10-19:** a stopped meeting can be resumed at any later time (minutes or days).
+- Resume records a new part of the same meeting: its own recording and conversation, so it appears in the
+  daily notes of **every day it has a part** (owner decision), marked "(continued)" after the first.
+- The meeting page joins all parts, with a "Resumed … · after …" divider; notes, Q&A and the rolling summary
+  cover all parts; Q&A citations stay exact per part.
+- Speakers heard in earlier parts are carried into live speaker separation, so they keep their label or name;
+  naming a speaker in any part names them in all parts.
+- Resume defaults to the audio source the meeting last used; it can be changed.
 
 ### 6.7 Functional requirements
 - B-1: Start or stop a meeting, and pick the audio source and devices.
@@ -209,7 +219,7 @@ These components are maintained continuously:
 - B-5: Streaming answers with clickable timestamp citations that scroll the transcript to the cited spot.
 - B-6: Optional pre-meeting context upload.
 - B-7: Meeting audio saved to disk per channel for the post-meeting pass.
-- B-8: Post-meeting pass runs automatically after Stop, or on demand.
+- B-8: Stop finishes the meeting from the live transcript within seconds; a full re-run only on demand.
 - B-9: The UI stays responsive while the LLM is generating. Transcription never pauses for Q&A.
 - B-10: Headphone check before starting a Mic + System meeting, and a warning when the system channel is silent (§6.2).
 - B-11: The Mac does not idle-sleep during a meeting (§8).

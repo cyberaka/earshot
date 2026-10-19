@@ -58,9 +58,16 @@ public class MeetingService {
 	private final Path meetingsDir;
 	private final ExecutorService liveIndex = Executors.newSingleThreadExecutor(Thread.ofVirtual().factory());
 	private volatile Live live;
+	private final com.earshot.api.conversation.ConversationService conversations;
+	private final com.earshot.api.speaker.SpeakerMatcher matcher;
+	private final SpeakerNames names;
 
 	public MeetingService(JdbcClient db, MlClient ml, LlmClient llm, Settings settings, Indexer indexer, Jobs jobs, JobWorker worker,
-			MeetingSockets sockets, JsonMapper json, EarshotProperties props) {
+			MeetingSockets sockets, JsonMapper json, EarshotProperties props, com.earshot.api.conversation.ConversationService conversations,
+			com.earshot.api.speaker.SpeakerMatcher matcher, SpeakerNames names) {
+		this.conversations = conversations;
+		this.matcher = matcher;
+		this.names = names;
 		this.db = db;
 		this.ml = ml;
 		this.llm = llm;
@@ -90,6 +97,9 @@ public class MeetingService {
 		volatile double rtf;
 		volatile String warning;
 		volatile WebSocket ml;
+		// Live speaker labels ("mic:L1") -> speaker_cluster ids, and ML segment keys -> segment ids.
+		final java.util.concurrent.ConcurrentHashMap<String, Long> clusters = new java.util.concurrent.ConcurrentHashMap<>();
+		final java.util.concurrent.ConcurrentHashMap<String, Long> segments = new java.util.concurrent.ConcurrentHashMap<>();
 
 		Live(long meetingId, long recordingId, long conversationId, String audioMode, Instant startedAt) {
 			this.meetingId = meetingId;
@@ -130,14 +140,70 @@ public class MeetingService {
 				VALUES (:r, :m, 0, 0, :s, :d, :t, 'live', 'live') RETURNING id""").param("r", recId).param("m", meetingId)
 				.param("s", java.sql.Timestamp.from(now)).param("d", now.atZone(zone).toLocalDate())
 				.param("t", req.title() == null || req.title().isBlank() ? null : req.title()).query(Long.class).single();
-		Path dir = meetingsDir.resolve(String.valueOf(meetingId));
+		return begin(meetingId, recId, convId, mode, now, lang, meetingsDir.resolve(String.valueOf(meetingId)), req, Map.of(), true);
+	}
+
+	/**
+	 * Resumes a stopped meeting as a new part, minutes or days later (owner request, 2026-10-19).
+	 * The part is its own recording and conversation, so it shows on the day it happens; speakers
+	 * from earlier parts are seeded into live separation so they keep their labels and names.
+	 */
+	public synchronized long resume(long meetingId, Start req) throws Exception {
+		if (live != null) {
+			throw new IllegalStateException("A meeting is already recording.");
+		}
+		var m = db.sql("SELECT title, status FROM meeting WHERE id = :id").param("id", meetingId)
+				.query((rs, i) -> new String[] { rs.getString(1), rs.getString(2) }).optional()
+				.orElseThrow(() -> new IllegalArgumentException("No such meeting."));
+		if (!"done".equals(m[1])) {
+			throw new IllegalStateException("This meeting is still finishing; try again in a few seconds.");
+		}
+		String mode = req.audioMode() == null ? "mic" : req.audioMode();
+		Instant now = Instant.now();
+		ZoneId zone = ZoneId.systemDefault();
+		String lang = req.language() == null || req.language().isBlank() ? settings.str("language") : req.language();
+		int part = db.sql("SELECT COALESCE(max(part), 0) + 1 FROM conversation WHERE meeting_id = :m").param("m", meetingId)
+				.query(Integer.class).single();
+		long recId = db.sql("""
+				INSERT INTO recording (source_type, original_name, started_at, time_zone, started_at_source, language, status)
+				VALUES ('meeting', :t, :s, :tz, 'live', :l, 'live') RETURNING id""").param("t", m[0]).param("s", java.sql.Timestamp.from(now))
+				.param("tz", zone.getId()).param("l", lang).query(Long.class).single();
+		long convId = db.sql("""
+				INSERT INTO conversation (recording_id, meeting_id, part, start_offset_s, end_offset_s, started_at, local_date, title, stage, status)
+				VALUES (:r, :m, :p, 0, 0, :s, :d, :t, 'live', 'live') RETURNING id""").param("r", recId).param("m", meetingId).param("p", part)
+				.param("s", java.sql.Timestamp.from(now)).param("d", now.atZone(zone).toLocalDate()).param("t", m[0] + " (continued)")
+				.query(Long.class).single();
+		db.sql("UPDATE meeting SET status = 'live', audio_mode = :mode, ended_at = NULL WHERE id = :id").param("mode", mode)
+				.param("id", meetingId).update();
+		// Each speaker once, as their first cluster in this meeting, with their voice so far.
+		var seeds = new HashMap<String, java.util.List<Map<String, Object>>>();
+		db.sql("""
+				SELECT DISTINCT ON (COALESCE(sc.origin_cluster_id, sc.id)) COALESCE(sc.origin_cluster_id, sc.id) AS root, sc.channel,
+				       sc.embedding::text AS embedding
+				FROM speaker_cluster sc JOIN conversation c ON c.id = sc.conversation_id
+				WHERE c.meeting_id = :m AND c.id <> :c AND sc.embedding IS NOT NULL
+				ORDER BY COALESCE(sc.origin_cluster_id, sc.id), sc.speech_s DESC""").param("m", meetingId).param("c", convId)
+				.query((rs, i) -> new Object[] { rs.getLong(1), rs.getString(2), rs.getString(3) }).list()
+				.forEach(r -> seeds.computeIfAbsent((String) r[1], k -> new java.util.ArrayList<>())
+						.add(Map.of("label", "C" + r[0], "embedding", json.readTree((String) r[2]))));
+		try {
+			return begin(meetingId, recId, convId, mode, now, lang,
+					meetingsDir.resolve(String.valueOf(meetingId)).resolve("part-" + part), req, seeds, false);
+		} catch (Exception e) {
+			db.sql("UPDATE meeting SET status = 'done', ended_at = now() WHERE id = :id").param("id", meetingId).update();
+			throw e;
+		}
+	}
+
+	private long begin(long meetingId, long recId, long convId, String mode, Instant now, String lang, Path dir, Start req,
+			Map<String, ?> seeds, boolean newMeeting) throws Exception {
 		Files.createDirectories(dir);
 		db.sql("UPDATE recording SET path = :p WHERE id = :id").param("p", dir.toString()).param("id", recId).update();
 		var l = new Live(meetingId, recId, convId, mode, now);
 		live = l;
 		try {
 			String session = "m" + meetingId;
-			ml.liveStart(session, lang, settings.num("live_max_segment_seconds"));
+			ml.liveStart(session, lang, settings.num("live_max_segment_seconds"), seeds);
 			l.ml = HttpClient.newHttpClient().newWebSocketBuilder().connectTimeout(Duration.ofSeconds(5))
 					.buildAsync(URI.create(ml.liveEventsUrl(session)), new Listener(l)).join();
 			var channels = new LinkedHashMap<String, Integer>();
@@ -175,12 +241,13 @@ public class MeetingService {
 			if (l.ml != null) {
 				l.ml.abort();
 			}
+			// A failed resume removes only the new part; a failed new meeting removes the meeting.
 			db.sql("DELETE FROM recording WHERE id = :id").param("id", recId).update();
 			deleteDir(dir);
 			log.warn("event=meeting_start_failed meeting={} reason={}", meetingId, e.getMessage());
 			throw e;
 		}
-		log.info("event=meeting_started meeting={} mode={} source={}", meetingId, mode, req.source());
+		log.info("event=meeting_started meeting={} mode={} source={} resumed={}", meetingId, mode, req.source(), !newMeeting);
 		return meetingId;
 	}
 
@@ -214,19 +281,34 @@ public class MeetingService {
 		switch (ev.path("type").asString()) {
 			case "segment" -> {
 				String channel = ev.get("channel").asString();
-				double s = ev.get("start_s").asDouble(), e = ev.get("end_s").asDouble();
+				double st = ev.get("start_s").asDouble(), e = ev.get("end_s").asDouble();
+				Long clusterId = ev.path("speaker").isString() ? cluster(l, channel, ev.get("speaker").asString()) : null;
 				long id = db.sql("""
-						INSERT INTO segment (conversation_id, channel, live, start_s, end_s, text, words_json, confidence)
-						VALUES (:c, :ch, true, :s, :e, :t, CAST(:w AS jsonb), :p) RETURNING id""").param("c", l.conversationId)
-						.param("ch", channel).param("s", s).param("e", e).param("t", ev.get("text").asString())
+						INSERT INTO segment (conversation_id, speaker_cluster_id, channel, live, start_s, end_s, text, words_json, confidence)
+						VALUES (:c, :sc, :ch, true, :s, :e, :t, CAST(:w AS jsonb), :p) RETURNING id""").param("c", l.conversationId)
+						.param("sc", clusterId).param("ch", channel).param("s", st).param("e", e).param("t", ev.get("text").asString())
 						.param("w", ev.get("words").toString()).param("p", ev.path("confidence").asDouble()).query(Long.class).single();
+				if (ev.path("key").isString()) {
+					l.segments.put(ev.get("key").asString(), id);
+				}
 				db.sql("UPDATE conversation SET end_offset_s = GREATEST(end_offset_s, :e) WHERE id = :id").param("e", e)
 						.param("id", l.conversationId).update();
-				String name = SpeakerNames.channelName(channel, l.audioMode);
-				sockets.broadcast(l.meetingId, Map.of("type", "segment", "segment", Map.of("id", id, "startS", s, "endS", e,
-						"clock", l.startedAt.plusMillis((long) (s * 1000)).atZone(l.zone).format(HMS), "speaker", name,
-						"key", "Others".equals(name) ? "others" : "Room".equals(name) ? "room" : "me", "channel", channel,
-						"text", ev.get("text").asString(), "live", true)));
+				var sp = clusterId == null ? null : names.forConversation(l.conversationId).get(clusterId);
+				String name = sp != null ? sp.name() : SpeakerNames.channelName(channel, l.audioMode);
+				String key = sp != null ? com.earshot.api.conversation.ConversationService.key(sp)
+						: "Others".equals(name) ? "others" : "Room".equals(name) ? "room" : "me";
+				var seg = new HashMap<String, Object>();
+				seg.put("id", id);
+				seg.put("startS", st);
+				seg.put("endS", e);
+				seg.put("clock", l.startedAt.plusMillis((long) (st * 1000)).atZone(l.zone).format(HMS));
+				seg.put("speaker", name);
+				seg.put("key", key);
+				seg.put("clusterId", clusterId);
+				seg.put("channel", channel);
+				seg.put("text", ev.get("text").asString());
+				seg.put("live", true);
+				sockets.broadcast(l.meetingId, Map.of("type", "segment", "segment", seg));
 				l.newSegments.incrementAndGet();
 				liveIndex.submit(() -> {
 					try {
@@ -235,6 +317,37 @@ public class MeetingService {
 						log.warn("event=live_index_failed reason={}", ex.getMessage());
 					}
 				});
+			}
+			case "speakers" -> {
+				String channel = ev.get("channel").asString();
+				for (JsonNode sp : ev.get("speakers")) {
+					long id = cluster(l, channel, sp.get("label").asString());
+					db.sql("UPDATE speaker_cluster SET embedding = CAST(:e AS vector), speech_s = :s WHERE id = :id")
+							.param("e", sp.get("embedding").toString()).param("s", sp.path("speech_s").asDouble()).param("id", id).update();
+					matcher.matchLive(id, "mic_system".equals(l.audioMode));
+				}
+				broadcastSpeakers(l);
+			}
+			case "relabel" -> {
+				String channel = ev.get("channel").asString();
+				var changes = new java.util.ArrayList<Map<String, Object>>();
+				for (JsonNode c : ev.get("changes")) {
+					Long segId = l.segments.get(c.get("key").asString());
+					if (segId == null) {
+						continue;
+					}
+					long clusterId = cluster(l, channel, c.get("speaker").asString());
+					db.sql("UPDATE segment SET speaker_cluster_id = :c WHERE id = :id").param("c", clusterId).param("id", segId).update();
+					changes.add(Map.of("segmentId", segId, "clusterId", clusterId));
+				}
+				// Labels regrouping emptied are gone, unless the user named them.
+				db.sql("""
+						DELETE FROM speaker_cluster sc WHERE sc.conversation_id = :c AND NOT sc.manual
+						  AND NOT EXISTS (SELECT 1 FROM segment s WHERE s.speaker_cluster_id = sc.id)""").param("c", l.conversationId).update();
+				l.clusters.entrySet().removeIf(en -> db.sql("SELECT count(*) FROM speaker_cluster WHERE id = :id").param("id", en.getValue())
+						.query(Long.class).single() == 0);
+				sockets.broadcast(l.meetingId, Map.of("type", "relabel", "changes", changes));
+				broadcastSpeakers(l);
 			}
 			case "status" -> {
 				l.lagS = ev.path("lag_s").asDouble();
@@ -245,6 +358,44 @@ public class MeetingService {
 			default -> {
 			}
 		}
+	}
+
+	/** The speaker_cluster row for a live label, created on first sight. */
+	private long cluster(Live l, String channel, String label) {
+		return l.clusters.computeIfAbsent(channel + ":" + label, k -> {
+			if (label.startsWith("C")) {
+				// A speaker from an earlier part: same person, same name.
+				long origin = Long.parseLong(label.substring(1));
+				return db.sql("""
+						INSERT INTO speaker_cluster (conversation_id, label, channel, origin_cluster_id, person_id, manual)
+						SELECT :c, :l, :ch, id, person_id, manual FROM speaker_cluster WHERE id = :o RETURNING id""")
+						.param("c", l.conversationId).param("l", "live:" + k).param("ch", channel).param("o", origin).query(Long.class).single();
+			}
+			return db.sql("INSERT INTO speaker_cluster (conversation_id, label, channel) VALUES (:c, :l, :ch) RETURNING id")
+					.param("c", l.conversationId).param("l", "live:" + k).param("ch", channel).query(Long.class).single();
+		});
+	}
+
+	private void broadcastSpeakers(Live l) {
+		var list = conversations.speakers(l.conversationId).stream()
+				.filter(sp -> db.sql("SELECT count(*) FROM segment WHERE speaker_cluster_id = :id").param("id", sp.clusterId()).query(Long.class).single() > 0)
+				.toList();
+		sockets.broadcast(l.meetingId, Map.of("type", "speakers", "speakers", list));
+	}
+
+	/** After the user names a live speaker: re-match the others (the same voice may have two labels) and push names. */
+	public void onSpeakerChanged(long clusterId) {
+		var l = live;
+		if (l == null) {
+			return;
+		}
+		boolean ours = db.sql("SELECT count(*) FROM speaker_cluster WHERE id = :id AND conversation_id = :c").param("id", clusterId)
+				.param("c", l.conversationId).query(Long.class).single() > 0;
+		if (!ours) {
+			return;
+		}
+		l.clusters.values().forEach(id -> matcher.matchLive(id, "mic_system".equals(l.audioMode)));
+		broadcastSpeakers(l);
 	}
 
 	private Map<String, Object> status(Live l) {
@@ -306,8 +457,10 @@ public class MeetingService {
 	public void summarize(long meetingId, long conversationId, String model) {
 		var meta = db.sql("SELECT pre_context, rolling_summary::text, started_at, audio_mode FROM meeting WHERE id = :id").param("id", meetingId)
 				.query((rs, i) -> new Object[] { rs.getString(1), rs.getString(2), rs.getTimestamp(3).toInstant(), rs.getString(4) }).single();
+		var speakerNames = names.forConversation(conversationId);
 		var segs = db.sql("SELECT start_s, end_s, channel, text, speaker_cluster_id FROM segment WHERE conversation_id = :c ORDER BY start_s")
-				.param("c", conversationId).query((rs, i) -> new Object[] { rs.getDouble(1), rs.getDouble(2), rs.getString(3), rs.getString(4) })
+				.param("c", conversationId).query((rs, i) -> new Object[] { rs.getDouble(1), rs.getDouble(2), rs.getString(3), rs.getString(4),
+						rs.getObject(5) })
 				.list();
 		if (segs.isEmpty()) {
 			return;
@@ -318,9 +471,13 @@ public class MeetingService {
 		for (int i = from; i < segs.size(); i++) {
 			Object[] s = segs.get(i);
 			lines.append('[').append(i + 1).append("] ").append(start.plusMillis((long) ((double) s[0] * 1000)).atZone(ZoneId.systemDefault()).format(HMS))
-					.append(' ').append(SpeakerNames.channelName((String) s[2], (String) meta[3])).append(": ").append(s[3]).append('\n');
+					.append(' ').append(s[4] != null && speakerNames.containsKey(((Number) s[4]).longValue())
+							? speakerNames.get(((Number) s[4]).longValue()).name()
+							: SpeakerNames.channelName((String) s[2], (String) meta[3])).append(": ").append(s[3]).append('\n');
 		}
-		String previous = from > 0 && meta[1] != null ? "Summary of the earlier part:\n" + meta[1] + "\n\n" : "";
+		int part = db.sql("SELECT part FROM conversation WHERE id = :c").param("c", conversationId).query(Integer.class).single();
+		// A resumed meeting carries its earlier parts' summary forward.
+		String previous = (from > 0 || part > 1) && meta[1] != null ? "Summary of the earlier part:\n" + meta[1] + "\n\n" : "";
 		String agenda = meta[0] == null || ((String) meta[0]).isBlank() ? "" : "Agenda / pre-meeting notes:\n" + truncate((String) meta[0], 2000) + "\n\n";
 		String prompt = previous + agenda + "Transcript so far:\n" + lines + """
 
@@ -399,6 +556,13 @@ public class MeetingService {
 			live = null;
 		}
 		double duration = files.path("duration_s").asDouble();
+		if (duration < 1 && db.sql("SELECT count(*) FROM conversation WHERE meeting_id = :m").param("m", meetingId).query(Long.class).single() > 1) {
+			// An empty resumed part: drop the part, keep the meeting.
+			db.sql("DELETE FROM recording WHERE id = :id").param("id", l.recordingId).update();
+			db.sql("UPDATE meeting SET status = 'done', ended_at = now() WHERE id = :id").param("id", meetingId).update();
+			sockets.broadcast(meetingId, Map.of("type", "stopped"));
+			return Map.of("meetingId", meetingId, "durationS", 0);
+		}
 		if (duration < 1) {
 			discard(meetingId, l.recordingId);
 			return Map.of("meetingId", meetingId, "durationS", 0, "discarded", true);
@@ -406,8 +570,9 @@ public class MeetingService {
 		db.sql("UPDATE meeting SET ended_at = now(), status = 'processing', capture_files = CAST(:f AS jsonb) WHERE id = :id")
 				.param("f", files.path("files").toString()).param("id", meetingId).update();
 		db.sql("UPDATE recording SET duration_s = :d, status = 'captured' WHERE id = :id").param("d", duration).param("id", l.recordingId).update();
-		db.sql("UPDATE conversation SET end_offset_s = GREATEST(end_offset_s, :d), status = 'queued' WHERE id = :id").param("d", duration)
-				.param("id", l.conversationId).update();
+		db.sql("""
+				UPDATE conversation SET end_offset_s = GREATEST(end_offset_s, :d), status = 'queued', capture_files = CAST(:f AS jsonb)
+				WHERE id = :id""").param("d", duration).param("f", files.path("files").toString()).param("id", l.conversationId).update();
 		jobs.enqueue("post_meeting", l.recordingId, l.conversationId, meetingId);
 		worker.wake();
 		sockets.broadcast(meetingId, Map.of("type", "stopped"));
@@ -440,7 +605,9 @@ public class MeetingService {
 	@org.springframework.context.event.EventListener(org.springframework.boot.context.event.ApplicationReadyEvent.class)
 	@org.springframework.core.annotation.Order(100)
 	public void recoverOrphans() {
-		var orphans = db.sql("SELECT m.id, m.recording_id, c.id FROM meeting m JOIN conversation c ON c.meeting_id = m.id WHERE m.status = 'live'")
+		var orphans = db.sql("""
+				SELECT m.id, c.recording_id, c.id FROM meeting m JOIN conversation c ON c.meeting_id = m.id AND c.status = 'live'
+				WHERE m.status = 'live'""")
 				.query((rs, i) -> new long[] { rs.getLong(1), rs.getLong(2), rs.getLong(3) }).list();
 		for (long[] o : orphans) {
 			double duration = 0;
@@ -459,7 +626,8 @@ public class MeetingService {
 			}
 			db.sql("UPDATE meeting SET ended_at = now(), status = 'processing', capture_files = CAST(:f AS jsonb) WHERE id = :id")
 					.param("f", files.path("files").toString()).param("id", o[0]).update();
-			db.sql("UPDATE conversation SET status = 'queued' WHERE id = :id").param("id", o[2]).update();
+			db.sql("UPDATE conversation SET status = 'queued', capture_files = CAST(:f AS jsonb) WHERE id = :id")
+					.param("f", files.path("files").toString()).param("id", o[2]).update();
 			jobs.enqueue("post_meeting", o[1], o[2], o[0]);
 			log.info("event=meeting_recovered meeting={}", o[0]);
 		}
@@ -495,11 +663,16 @@ public class MeetingService {
 	public Map<String, Object> view(long meetingId) {
 		var row = db.sql("""
 				SELECT m.id, m.title, m.audio_mode, m.started_at, m.ended_at, m.status, m.rolling_summary::text AS summary, m.pre_context,
-				       c.id AS conversation_id, m.recording_id
-				FROM meeting m JOIN conversation c ON c.meeting_id = m.id WHERE m.id = :id""").param("id", meetingId).query().singleRow();
+				       c.id AS conversation_id, c.recording_id
+				FROM meeting m JOIN conversation c ON c.meeting_id = m.id WHERE m.id = :id ORDER BY c.part DESC LIMIT 1""")
+				.param("id", meetingId).query().singleRow();
 		var out = new LinkedHashMap<String, Object>(row);
 		out.put("summary", row.get("summary") == null ? null : json.readTree((String) row.get("summary")));
 		out.put("live", activeId() != null && activeId() == meetingId);
+		out.put("parts", db.sql("""
+				SELECT c.part, c.id AS conversation_id, c.recording_id, c.started_at, c.local_date::text AS local_date,
+				       c.end_offset_s - c.start_offset_s AS duration_s
+				FROM conversation c WHERE c.meeting_id = :id ORDER BY c.part""").param("id", meetingId).query().listOfRows());
 		var l = live;
 		if (l != null && l.meetingId == meetingId) {
 			out.put("status_live", status(l));

@@ -53,6 +53,11 @@ public class MeetingController {
 		return Map.of("meetingId", meetings.start(req));
 	}
 
+	@PostMapping("/{id}/resume")
+	public Map<String, Object> resume(@PathVariable long id, @RequestBody MeetingService.Start req) throws Exception {
+		return Map.of("meetingId", meetings.resume(id, req));
+	}
+
 	@PostMapping("/{id}/stop")
 	public Map<String, Object> stop(@PathVariable long id) {
 		return meetings.stop(id);

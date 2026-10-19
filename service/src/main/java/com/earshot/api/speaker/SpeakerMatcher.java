@@ -101,6 +101,34 @@ public class SpeakerMatcher {
 		return new Result(meSpeech, meSpeechLoose, ambient);
 	}
 
+	/**
+	 * Matches one live cluster as its voice accumulates. A name the user gave (manual) is never
+	 * overridden. In an online call without a Me voiceprint, the mic channel is the user.
+	 */
+	public void matchLive(long clusterId, boolean micIsMe) {
+		var row = db.sql("SELECT embedding::text, manual, channel FROM speaker_cluster WHERE id = :id AND embedding IS NOT NULL")
+				.param("id", clusterId).query((rs, i) -> new Object[] { rs.getString(1), rs.getBoolean(2), rs.getString(3) }).optional();
+		if (row.isEmpty() || (boolean) row.get()[1]) {
+			return;
+		}
+		var prints = prints();
+		var ranked = rank(Vectors.parse((String) row.get()[0]), prints);
+		Long person = null;
+		double score = ranked.isEmpty() ? 0 : ranked.getFirst().score();
+		if (!ranked.isEmpty()) {
+			var top = ranked.getFirst();
+			if (top.score() >= (top.isMe() ? settings.num("me_threshold") : settings.num("person_threshold"))) {
+				person = top.personId();
+			}
+		}
+		if (person == null && micIsMe && "mic".equals(row.get()[2]) && prints.stream().noneMatch(Print::isMe)) {
+			person = db.sql("SELECT id FROM person WHERE is_me").query(Long.class).optional()
+					.orElseGet(() -> db.sql("INSERT INTO person (name, is_me) VALUES ('Me', true) RETURNING id").query(Long.class).single());
+		}
+		db.sql("UPDATE speaker_cluster SET person_id = :p, match_score = :s WHERE id = :id").param("p", person).param("s", score)
+				.param("id", clusterId).update();
+	}
+
 	/** A near-threshold suggestion for an unnamed cluster (PRD §7 naming flow). */
 	public Best suggest(float[] embedding) {
 		var ranked = rank(embedding, prints());

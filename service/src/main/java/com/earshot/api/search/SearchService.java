@@ -150,6 +150,40 @@ public class SearchService {
 		return hits;
 	}
 
+	public record NoteHit(long noteId, long conversationId, String text, LocalDate date, String clock, String conversationTitle) {
+	}
+
+	/** The user's own notes matching the query (full text or fuzzy), best first. */
+	public List<NoteHit> searchNotes(String query, Scope scope, int limit) {
+		var terms = terms(query);
+		if (terms.isEmpty()) {
+			return List.of();
+		}
+		var p = new HashMap<String, Object>();
+		String where = scopeSql(scope, p);
+		p.put("q", String.join(" | ", terms.stream().map(t -> t.replace("'", "")).filter(t -> !t.isBlank()).toList()));
+		var fuzzy = terms.stream().filter(x -> x.length() >= 4).toList();
+		p.put("terms", fuzzy.isEmpty() ? terms : fuzzy);
+		p.put("n", limit);
+		var spec = db.sql("""
+				SELECT n.id, n.conversation_id, n.text, c.local_date, n.anchor_s, r.started_at, r.time_zone, c.title
+				FROM note n JOIN conversation c ON c.id = n.conversation_id JOIN recording r ON r.id = c.recording_id
+				WHERE (n.tsv @@ to_tsquery('simple', :q)
+				       OR EXISTS (SELECT 1 FROM unnest(ARRAY[:terms]::text[]) term WHERE word_similarity(term, n.text) > 0.55))""" + where
+				+ " ORDER BY ts_rank(n.tsv, to_tsquery('simple', :q)) DESC, n.created_at DESC LIMIT :n");
+		for (var e : p.entrySet()) {
+			spec = spec.param(e.getKey(), e.getValue());
+		}
+		return spec.query((rs, i) -> {
+			long conv = rs.getLong(2);
+			Double anchor = (Double) rs.getObject(5);
+			String clock = anchor == null ? null : rs.getTimestamp(6).toInstant().plusMillis((long) (anchor * 1000))
+					.atZone(ZoneId.of(rs.getString(7))).format(DateTimeFormatter.ofPattern("HH:mm:ss"));
+			return new NoteHit(rs.getLong(1), conv, rs.getString(3), rs.getObject(4, LocalDate.class), clock,
+					names.render(rs.getString(8), names.forConversation(conv)));
+		}).list();
+	}
+
 	public Hit hit(long segmentId, double score) {
 		return db.sql("""
 				SELECT s.id, s.conversation_id, c.recording_id, s.start_s, s.end_s, s.text, s.speaker_cluster_id, s.channel, c.local_date,

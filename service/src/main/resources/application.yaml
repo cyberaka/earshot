@@ -64,7 +64,7 @@ earshot:
     me_ambient_threshold: 0.45
     person_threshold: 0.6
     me_min_speech_seconds: 10
-    diarization_threshold: 0.55
+    diarization_threshold: 0.68
     summary_interval_seconds: 120
     summary_every_segments: 8
     qa_prompt_max_tokens: 3000

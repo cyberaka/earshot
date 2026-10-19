@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { api, todayLocal, type SearchHit } from '../api'
+import { api, todayLocal, type NoteHit, type SearchHit } from '../api'
+import { NoteText } from '../components/Notes'
 import AskBox from '../components/AskBox'
 import ui from '../components/ui.module.css'
 import s from './Search.module.css'
@@ -19,12 +20,13 @@ export default function Search() {
   const [from, setFrom] = useState(weeksAgo(4))
   const [to, setTo] = useState(todayLocal())
   const [hits, setHits] = useState<SearchHit[] | null>(null)
+  const [noteHits, setNoteHits] = useState<NoteHit[]>([])
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => { setInput(q) }, [q])
   useEffect(() => {
-    if (!q) { setHits(null); return }
-    api.search(q).then(setHits).catch(e => setError(String(e)))
+    if (!q) { setHits(null); setNoteHits([]); return }
+    api.search(q).then(r => { setHits(r.transcript); setNoteHits(r.notes) }).catch(e => setError(String(e)))
   }, [q])
 
   function submit(e: FormEvent) {
@@ -41,9 +43,20 @@ export default function Search() {
         <button className={ui.primary}>Search</button>
       </form>
       {error && <div className={ui.error}>{error}</div>}
+      {noteHits.length > 0 && (
+        <section className={ui.card}>
+          <h2 className={s.h2}>Your notes</h2>
+          {noteHits.map(n => (
+            <div key={n.noteId} className={s.hit}>
+              <Link to={`/day/${n.date}/${n.conversationId}`} className={s.hitMeta}><span className="mono">{n.date}{n.clock ? ` ${n.clock}` : ''}</span> · {n.conversationTitle ?? 'Conversation'}</Link>
+              <NoteText text={n.text} />
+            </div>
+          ))}
+        </section>
+      )}
       {hits && (
         <section className={ui.card}>
-          <h2 className={s.h2}>{hits.length} result{hits.length === 1 ? '' : 's'} for “{q}”</h2>
+          <h2 className={s.h2}>{hits.length} transcript result{hits.length === 1 ? '' : 's'} for “{q}”</h2>
           {hits.length === 0 && <span className={ui.muted}>Nothing matched.</span>}
           {hits.map(h => (
             <Link key={h.segmentId} to={`/day/${h.date}/${h.conversationId}`} className={s.hit}>

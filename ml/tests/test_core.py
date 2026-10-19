@@ -36,3 +36,15 @@ def test_cap_cut_keeps_overlap():
     # The carried-forward audio starts before the cut, so a word split by it is heard whole once.
     assert s.buf_start + kept == int(2.5 * SAMPLE_RATE)
     assert s.buf_start < len(audio)
+
+
+def test_nan_scores_become_finite(monkeypatch):
+    import json
+    import math
+
+    fake = {"segments": [{"start": 0.0, "end": 1.0, "text": "hi", "avg_logprob": float("nan"), "no_speech_prob": float("nan"),
+                          "compression_ratio": 1.0, "words": [{"word": "hi", "start": 0.0, "end": 0.5, "probability": float("nan")}]}]}
+    monkeypatch.setattr(asr.mlx_whisper, "transcribe", lambda *a, **k: fake)
+    seg = asr.MlxWhisper().transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32))[0]
+    assert math.isfinite(seg.avg_logprob) and math.isfinite(seg.no_speech_prob)
+    json.dumps(seg.words, allow_nan=False)
