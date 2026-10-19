@@ -19,7 +19,7 @@ export interface SpeakerView {
 
 export interface SegmentView {
   id: number; startS: number; endS: number; clock: string; speaker: string; key: string
-  clusterId: number | null; channel: string; text: string; live: boolean
+  clusterId: number | null; channel: string; text: string; live: boolean; elapsedS: number
 }
 
 export interface NoteView { id: number; text: string; anchorS: number | null; clock: string | null; createdAt: string }
@@ -153,7 +153,7 @@ export const api = {
   saveSettings: (changes: Record<string, unknown>) => send<Record<string, unknown>>('PUT', '/api/settings', changes),
 
   preflight: () => get<{ devices: Devices; activeMeetingId: number | '' }>('/api/meetings/preflight'),
-  meetings: () => get<{ id: number; title: string; audio_mode: string; started_at: string; ended_at: string | null; status: string }[]>('/api/meetings'),
+  meetings: () => get<{ id: number; title: string; audio_mode: string; started_at: string; ended_at: string | null; status: string; parts: number; duration_s: number | null }[]>('/api/meetings'),
   startMeeting: (body: Record<string, unknown>) => send<{ meetingId: number }>('POST', '/api/meetings', body),
   stopMeeting: (id: number) => send('POST', `/api/meetings/${id}/stop`),
   resumeMeeting: (id: number, body: Record<string, unknown>) => send<{ meetingId: number }>('POST', `/api/meetings/${id}/resume`, body),
@@ -234,4 +234,11 @@ export function nearest<T extends { startS: number }>(segments: T[], at: number)
   let best: T | undefined
   for (const s of segments) if (!best || Math.abs(s.startS - at) < Math.abs(best.startS - at)) best = s
   return best
+}
+
+/** Elapsed time as m:ss, or h:mm:ss from an hour on. */
+export function fmtElapsed(sec: number): string {
+  const t = Math.max(0, Math.floor(sec))
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), x = t % 60
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(x).padStart(2, '0')}` : `${m}:${String(x).padStart(2, '0')}`
 }

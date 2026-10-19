@@ -22,7 +22,9 @@
 .override { margin-top: 8px; color: var(--ink); }
 .whiteDot { width: 9px; height: 9px; border-radius: 50%; background: #FFFFFF; }
 .pastList { display: flex; flex-direction: column; }
-.past { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 10px 0; border-top: 1px solid var(--border-soft); text-decoration: none; color: var(--ink); }
+.past { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 0; border-top: 1px solid var(--border-soft); }
+.pastTitle { flex: 1 1 240px; color: var(--ink); font-weight: 600; text-decoration: none; }
+.pastTitle:hover { text-decoration: underline; }
 
 .liveWrap { display: flex; flex-direction: column; gap: 14px; }
 .liveHead {

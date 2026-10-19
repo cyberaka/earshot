@@ -55,8 +55,12 @@ public class ConversationService {
 	public record ActionItem(long id, String text, String owner, boolean done) {
 	}
 
+	/**
+	 * {@code elapsedS}: time into the conversation, or into the whole meeting across all its parts
+	 * (owner request: to find where to resume a video that was playing).
+	 */
 	public record SegmentView(long id, double startS, double endS, String clock, String speaker, String key, Long clusterId,
-			String channel, String text, boolean live) {
+			String channel, String text, boolean live, double elapsedS) {
 	}
 
 	/** The user's own note; {@code clock} is set when it is pinned to a moment. */
@@ -84,13 +88,13 @@ public class ConversationService {
 
 	record Conv(long id, long recordingId, Long meetingId, Long dupOf, double startOff, double endOff, Instant recStart,
 			ZoneId zone, LocalDate date, String title, String summary, String topics, boolean ambient, String stage,
-			String status, String sourceType, String audioMode, String workPath) {
+			String status, String sourceType, String audioMode, String workPath, int part) {
 	}
 
 	private static final String CONV_SQL = """
 			SELECT c.id, c.recording_id, c.meeting_id, c.duplicate_of_meeting_id, c.start_offset_s, c.end_offset_s,
 			       r.started_at AS rec_start, r.time_zone, c.local_date, c.title, c.summary::text AS summary, c.topics::text AS topics,
-			       c.is_ambient, c.stage, c.status, r.source_type, m.audio_mode, r.work_path
+			       c.is_ambient, c.stage, c.status, r.source_type, m.audio_mode, r.work_path, c.part
 			FROM conversation c JOIN recording r ON r.id = c.recording_id LEFT JOIN meeting m ON m.id = c.meeting_id
 			""";
 
@@ -98,7 +102,7 @@ public class ConversationService {
 		return new Conv(rs.getLong(1), rs.getLong(2), (Long) rs.getObject(3), (Long) rs.getObject(4), rs.getDouble(5), rs.getDouble(6),
 				rs.getTimestamp(7).toInstant(), ZoneId.of(rs.getString(8)), rs.getObject(9, LocalDate.class), rs.getString(10),
 				rs.getString(11), rs.getString(12), rs.getBoolean(13), rs.getString(14), rs.getString(15), rs.getString(16),
-				rs.getString(17), rs.getString(18));
+				rs.getString(17), rs.getString(18), rs.getInt(19));
 	}
 
 	static String clock(Conv c, double offsetS, DateTimeFormatter f) {
@@ -130,8 +134,15 @@ public class ConversationService {
 			speakers.values().stream().sorted((a, b) -> Boolean.compare(b.isMe(), a.isMe()))
 					.forEach(s -> tags.add(new Tag(s.name(), key(s))));
 			if (speakers.isEmpty() && c.meetingId() != null) {
-				tags.add(new Tag("Me", "me"));
-				tags.add(new Tag("Others", "others"));
+				// No speaker separation (recorded before it existed): say what the channels can tell.
+				if ("mic".equals(c.audioMode())) {
+					tags.add(new Tag("Room", "room"));
+				} else {
+					if ("mic_system".equals(c.audioMode())) {
+						tags.add(new Tag("Me", "me"));
+					}
+					tags.add(new Tag("Others", "others"));
+				}
 			}
 			ambient += c.ambient() ? 1 : 0;
 			meetings += c.meetingId() != null ? 1 : 0;
@@ -201,6 +212,10 @@ public class ConversationService {
 					return new ActionItem(rs.getLong(1), names.render(rs.getString(2), speakers), sp == null ? null : sp.name(), rs.getBoolean(4));
 				}).list();
 		var speakerViews = speakers(id, speakers);
+		// A meeting's earlier parts count towards elapsed time; a recorder conversation starts at zero.
+		double base = c.meetingId() == null ? -c.startOff() : db.sql("""
+				SELECT COALESCE(sum(end_offset_s - start_offset_s), 0) FROM conversation WHERE meeting_id = :m AND part < :p""")
+				.param("m", c.meetingId()).param("p", c.part()).query(Double.class).single();
 		var segments = db.sql("""
 				SELECT id, start_s, end_s, speaker_cluster_id, channel, text, live FROM segment
 				WHERE conversation_id = :c ORDER BY start_s""").param("c", id).query((rs, i) -> {
@@ -210,7 +225,7 @@ public class ConversationService {
 			String name = sp != null ? sp.name() : SpeakerNames.channelName(channel, c.audioMode());
 			String key = sp != null ? key(sp) : ("Others".equals(name) ? "others" : "Room".equals(name) ? "room" : "me");
 			return new SegmentView(rs.getLong(1), rs.getDouble(2), rs.getDouble(3), clock(c, rs.getDouble(2), HMS), name, key, cid,
-					channel, rs.getString(6), rs.getBoolean(7));
+					channel, rs.getString(6), rs.getBoolean(7), base + rs.getDouble(2));
 		}).list();
 		return new Detail(id, c.recordingId(), c.meetingId(), c.sourceType(), c.date(), clock(c, c.startOff(), HM),
 				clock(c, c.endOff(), HM), c.endOff() - c.startOff(), displayTitle(c, speakers), summary, topics, actions,

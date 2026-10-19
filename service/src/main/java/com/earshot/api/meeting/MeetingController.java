@@ -44,7 +44,10 @@ public class MeetingController {
 	@GetMapping
 	public List<Map<String, Object>> list() {
 		return db.sql("""
-				SELECT m.id, m.title, m.audio_mode, m.started_at, m.ended_at, m.status FROM meeting m ORDER BY m.id DESC LIMIT 50""")
+				SELECT m.id, m.title, m.audio_mode, m.started_at, m.ended_at, m.status,
+				       (SELECT count(*) FROM conversation c WHERE c.meeting_id = m.id) AS parts,
+				       (SELECT sum(c.end_offset_s - c.start_offset_s) FROM conversation c WHERE c.meeting_id = m.id) AS duration_s
+				FROM meeting m ORDER BY m.id DESC LIMIT 50""")
 				.query().listOfRows();
 	}
 

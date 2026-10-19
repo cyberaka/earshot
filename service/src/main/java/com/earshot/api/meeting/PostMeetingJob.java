@@ -192,6 +192,8 @@ public class PostMeetingJob implements JobWorker.Handler {
 			db.sql("UPDATE conversation SET title = :t, summary = CAST(:s AS jsonb), topics = CAST(:tp AS jsonb) WHERE id = :id")
 					.param("t", useTitle).param("s", json.writeValueAsString(java.util.Map.of("bullets", bullets)))
 					.param("tp", json.writeValueAsString(topics)).param("id", convId).update();
+			// An untitled meeting takes the generated title, so lists show something recognisable.
+			db.sql("UPDATE meeting SET title = :t WHERE id = :id AND title = 'Meeting'").param("t", named).param("id", meetingId).update();
 			db.sql("DELETE FROM action_item WHERE conversation_id = :c").param("c", convId).update();
 			for (JsonNode a : r.path("action_items")) {
 				String text = a.path("text").asString("");

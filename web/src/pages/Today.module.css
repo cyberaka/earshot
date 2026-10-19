@@ -109,3 +109,5 @@
   .who { width: 70px; }
   .clock { width: 62px; }
 }
+
+.meetingLinks { margin-left: auto; display: flex; gap: 8px; }

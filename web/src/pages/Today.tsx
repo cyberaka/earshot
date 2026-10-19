@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { api, nearest, fmtDuration, speakerColor, todayLocal, type ConversationDetail, type DayView, type NoteView, type Person, type SpeakerView } from '../api'
+import { api, nearest, fmtDuration, fmtElapsed, speakerColor, todayLocal, type ConversationDetail, type DayView, type NoteView, type Person, type SpeakerView } from '../api'
 import AskBox from '../components/AskBox'
+import TimeToggle, { useTimeMode } from '../components/TimeToggle'
 import NotesSection, { NoteEditor, NoteItem } from '../components/Notes'
 import ui from '../components/ui.module.css'
 import s from './Today.module.css'
@@ -29,7 +30,12 @@ export default function Today() {
 
   // Without a date in the URL, open the most recent day that has notes.
   useEffect(() => {
-    if (!params.date) api.days().then(d => setLatest(d[0]?.local_date ?? todayLocal())).catch(() => setLatest(todayLocal()))
+    // Today if it has notes, else the most recent earlier day; future-dated imports never hide today.
+    if (!params.date) api.days().then(d => {
+      const today = todayLocal()
+      const past = d.map(x => x.local_date).filter(x => x <= today)
+      setLatest(past.includes(today) ? today : past[0] ?? d[0]?.local_date ?? today)
+    }).catch(() => setLatest(todayLocal()))
   }, [params.date])
 
   const load = useCallback(() => {
@@ -107,6 +113,7 @@ function Conversation({ id, onChanged, seek, onSeekDone }: { id: number; onChang
   const [markMe, setMarkMe] = useState<Set<number> | null>(null)
   const [highlight, setHighlight] = useState<number | null>(null)
   const [pinTo, setPinTo] = useState<number | null>(null)
+  const [timeMode, setTimeMode] = useTimeMode()
   const audio = useRef<HTMLAudioElement>(null)
   const rows = useRef<Map<number, HTMLDivElement>>(new Map())
 
@@ -161,6 +168,12 @@ function Conversation({ id, onChanged, seek, onSeekDone }: { id: number; onChang
       <div className={s.detailHead}>
         <h2 className={s.detailTitle}>{d.title}</h2>
         <span className={s.meta}>{d.startClock} – {d.endClock} · {fmtDuration(d.durationS)} · {d.source === 'meeting' ? 'meeting' : 'recorder'}</span>
+        {d.meetingId !== null && (
+          <span className={s.meetingLinks}>
+            <Link className={ui.btnSmall} to={`/meeting/${d.meetingId}`}>Open meeting</Link>
+            {d.status === 'done' && <Link className={ui.btnSmall} to={`/meeting?resume=${d.meetingId}`}>Resume meeting</Link>}
+          </span>
+        )}
       </div>
 
       {d.status !== 'done' && <div className={ui.notice}>{d.status === 'live' ? 'This meeting is live.' : `Processing (${d.stage})…`}</div>}
@@ -214,6 +227,7 @@ function Conversation({ id, onChanged, seek, onSeekDone }: { id: number; onChang
         <section>
           <div className={s.transcriptHead}>
             <h3 className={ui.sectionLabel}>Transcript</h3>
+            <TimeToggle mode={timeMode} onChange={setTimeMode} />
             {(markMe
               ? <span className={s.markBar}>{markMe.size} selected <button className={ui.btnSmall} onClick={saveMe} disabled={markMe.size === 0}>Save as my voice</button><button className={ui.btnSmall} onClick={() => setMarkMe(null)}>Cancel</button></span>
               : <button className={ui.btnSmall} onClick={() => setMarkMe(new Set())}>Mark lines that are me</button>)}
@@ -231,7 +245,9 @@ function Conversation({ id, onChanged, seek, onSeekDone }: { id: number; onChang
                     : <button className={s.play} aria-label={`Play from ${seg.clock}`} disabled={!d.hasAudio} onClick={() => play(seg.startS, seg.endS + 0.3)}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4l13 8-13 8z" /></svg>
                     </button>}
-                  <span className={s.clock}>{seg.clock}</span>
+                  <span className={s.clock} title={timeMode === 'clock' ? `${fmtElapsed(seg.elapsedS)} from the start` : `at ${seg.clock}`}>
+                    {timeMode === 'clock' ? seg.clock : fmtElapsed(seg.elapsedS)}
+                  </span>
                   <span className={s.who} style={{ color: col.fg }}>{seg.speaker}</span>
                   <span className={s.text}>{seg.text}</span>
                   {!markMe && <button className={s.noteBtn} aria-label={`Add a note at ${seg.clock}`} title="Add a note here"

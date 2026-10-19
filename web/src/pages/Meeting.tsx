@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { api, nearest, speakerColor, type Citation, type Devices, type MeetingSummary, type MeetingView, type NoteView, type Person, type SegmentView, type SpeakerView } from '../api'
+import { api, fmtElapsed, nearest, speakerColor, type Citation, type Devices, type MeetingSummary, type MeetingView, type NoteView, type Person, type SegmentView, type SpeakerView } from '../api'
 import { Answer, useAsk } from '../components/AskBox'
 import { NoteEditor, NoteItem } from '../components/Notes'
 import { NameSpeaker } from './Today'
+import TimeToggle, { useTimeMode } from '../components/TimeToggle'
 import ui from '../components/ui.module.css'
 import s from './Meeting.module.css'
 
@@ -23,9 +24,10 @@ function StartMeeting() {
   const [params] = useSearchParams()
   const resumeId = params.get('resume') ? Number(params.get('resume')) : null
   const [resumeTitle, setResumeTitle] = useState<string | null>(null)
+  const [recordedS, setRecordedS] = useState<number | null>(null)
   const [devices, setDevices] = useState<Devices | null>(null)
   const [active, setActive] = useState<number | ''>('')
-  const [past, setPast] = useState<{ id: number; title: string; started_at: string; status: string; audio_mode: string }[]>([])
+  const [past, setPast] = useState<{ id: number; title: string; started_at: string; status: string; audio_mode: string; parts: number; duration_s: number | null }[]>([])
   const [title, setTitle] = useState('')
   const [mode, setMode] = useState('mic_system')
   const [device, setDevice] = useState('')
@@ -39,7 +41,7 @@ function StartMeeting() {
   const [override, setOverride] = useState(false)
   const [busy, setBusy] = useState(false)
   // Resuming defaults to the audio source the meeting last used.
-  useEffect(() => { if (resumeId) api.meeting(resumeId).then(mv => { setResumeTitle(mv.title); setMode(mv.audio_mode) }).catch(() => {}) }, [resumeId])
+  useEffect(() => { if (resumeId) api.meeting(resumeId).then(mv => { setResumeTitle(mv.title); setMode(mv.audio_mode); setRecordedS(mv.parts.reduce((t, p) => t + p.duration_s, 0)) }).catch(() => {}) }, [resumeId])
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -92,6 +94,9 @@ function StartMeeting() {
     <>
       <h1 className={s.pageTitle}>{resumeId ? `Resume “${resumeTitle ?? '…'}”` : 'Start a meeting'}</h1>
       {resumeId && <p className={ui.muted} style={{ margin: 0 }}>Recording continues in the same meeting as a new part. People heard earlier keep their names.</p>}
+      {resumeId && recordedS !== null && (
+        <div className={ui.notice}>Recorded so far: <b className="mono">{fmtElapsed(recordedS)}</b>. If you are following a video, resume it from about <b className="mono">{fmtElapsed(recordedS)}</b>.</div>
+      )}
       <form className={s.setup} onSubmit={start}>
         <section className={ui.card}>
           {!resumeId && (
@@ -180,10 +185,16 @@ function StartMeeting() {
           <h2 className={s.h2}>Past meetings</h2>
           <div className={s.pastList}>
             {past.map(m => (
-              <Link key={m.id} to={`/meeting/${m.id}`} className={s.past}>
-                <span>{m.title}</span>
-                <span className={ui.muted}>{new Date(m.started_at).toLocaleString()} · {m.status}</span>
-              </Link>
+              <div key={m.id} className={s.past}>
+                <Link to={`/meeting/${m.id}`} className={s.pastTitle}>{m.title}</Link>
+                <span className={ui.muted}>
+                  {new Date(m.started_at).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                  {m.duration_s ? ` · ${Math.max(1, Math.round(m.duration_s / 60))} min` : ''}
+                  {m.parts > 1 ? ` · ${m.parts} parts` : ''}
+                  {m.status !== 'done' ? ` · ${m.status}` : ''}
+                </span>
+                {m.status === 'done' && <Link className={ui.btnSmall} to={`/meeting?resume=${m.id}`}>Resume</Link>}
+              </div>
             ))}
           </div>
         </section>
@@ -234,6 +245,8 @@ function LiveMeeting({ id }: { id: number }) {
   const [discussed, setDiscussed] = useState('')
   const listRef = useRef<HTMLDivElement>(null)
   const currentPart = useRef(1)
+  const partBase = useRef(0)
+  const [timeMode, setTimeMode] = useTimeMode()
   const rows = useRef<Map<number, HTMLDivElement>>(new Map())
   const follow = useRef(true)
   const { items, setItems, busy, run } = useAsk('meeting', String(id))
@@ -242,6 +255,7 @@ function LiveMeeting({ id }: { id: number }) {
     const mv = await api.meeting(id)
     setM(mv)
     currentPart.current = mv.parts.length ? mv.parts[mv.parts.length - 1].part : 1
+    partBase.current = mv.parts.slice(0, -1).reduce((t, p) => t + p.duration_s, 0)
     setSummary(mv.summary)
     // A resumed meeting has several parts: join their transcripts, notes and speakers.
     const convs = await Promise.all(mv.parts.map(p => api.conversation(p.conversation_id)))
@@ -266,7 +280,7 @@ function LiveMeeting({ id }: { id: number }) {
     ws.onmessage = ev => {
       const e = JSON.parse(ev.data)
       if (e.type === 'discarded') { navigate('/meeting'); return }
-      if (e.type === 'segment') setSegments(prev => [...prev, { ...e.segment, part: currentPart.current }])
+      if (e.type === 'segment') setSegments(prev => [...prev, { ...e.segment, part: currentPart.current, elapsedS: partBase.current + e.segment.startS }])
       else if (e.type === 'speakers') {
         // The live part's speakers, plus earlier parts' speakers not heard again yet.
         const live: SpeakerView[] = e.speakers
@@ -351,6 +365,7 @@ function LiveMeeting({ id }: { id: number }) {
         <section aria-label="Transcript" className={s.transcript}>
           <div className={s.panelHead}>
             <h2 className={s.h2}>{m.live ? 'Live transcript' : 'Transcript'}</h2>
+            <TimeToggle mode={timeMode} onChange={setTimeMode} />
           </div>
           {speakers.length > 0 && (
             <div className={s.speakerBar}>
@@ -387,7 +402,9 @@ function LiveMeeting({ id }: { id: number }) {
                 <div key={seg.id}>
                 {divider && <div className={s.partDivider}>{resumedLabel(m.parts, divider.part)}</div>}
                 <div ref={el => { if (el) rows.current.set(seg.id, el) }} className={cited.has(seg.id) ? s.lineCited : s.line}>
-                  <span className={s.clock}>{seg.clock}</span>
+                  <span className={s.clock} title={timeMode === 'clock' ? `${fmtElapsed(seg.elapsedS)} from the start` : `at ${seg.clock}`}>
+                    {timeMode === 'clock' ? seg.clock : fmtElapsed(seg.elapsedS)}
+                  </span>
                   {sp
                     ? <button className={s.whoBtn} style={{ color: speakerColor(sp.key).fg }} onClick={() => setNaming(sp)} title="Name this speaker">{sp.name}</button>
                     : <span className={s.who} style={{ color: speakerColor(seg.key).fg }}>{seg.speaker}</span>}
