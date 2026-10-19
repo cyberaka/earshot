@@ -1,0 +1,9 @@
+.title { font-size: 30px; letter-spacing: -0.02em; }
+.h2 { font-size: 18px; }
+.searchForm { display: flex; gap: 8px; }
+.searchForm input { flex: 1; }
+.hit { display: flex; flex-direction: column; gap: 4px; padding: 10px 0; border-top: 1px solid var(--border-soft); color: var(--ink); text-decoration: none; }
+.hit:hover { color: var(--ink); background: var(--surface-2); }
+.hitMeta { font-size: 13px; color: var(--muted); }
+.rangeRow { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.rangeRow h2 { flex: 1 1 200px; }

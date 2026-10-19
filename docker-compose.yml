@@ -1,0 +1,21 @@
+# Local Postgres for Earshot only. The app itself runs on the host (./earshot).
+services:
+  earshot-db:
+    image: pgvector/pgvector:pg16
+    container_name: earshot-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: earshot
+      POSTGRES_USER: earshot
+      POSTGRES_PASSWORD: earshot
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - earshot-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U earshot -d earshot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+volumes:
+  earshot-pg:

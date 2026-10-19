@@ -1,0 +1,46 @@
+#!/bin/sh
+# Starts Earshot: the Postgres container, then the service, which starts and supervises the
+# Python ML and capture processes. Builds the UI and the jar when their sources changed.
+#
+#   ./earshot          run in the foreground (Ctrl-C stops the service and the ML process)
+set -e
+cd "$(dirname "$0")"
+ROOT=$(pwd)
+
+if [ ! -f .env ]; then
+	printf "# Local secrets and overrides (gitignored). Read by the service and the Python processes.\nEARSHOT_ML_SECRET=%s\n" "$(openssl rand -hex 24)" > .env
+	echo "Created .env with a new shared secret."
+fi
+
+if [ ! -x ml/.venv/bin/python ]; then
+	echo "Python environment missing. One-time setup:"
+	echo "  cd ml && uv venv -p python3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt"
+	exit 1
+fi
+
+docker compose up -d earshot-db >/dev/null
+printf "Waiting for Postgres"
+until [ "$(docker inspect -f '{{.State.Health.Status}}' earshot-db 2>/dev/null)" = "healthy" ]; do printf "."; sleep 1; done
+echo " ok"
+
+STATIC=service/src/main/resources/static/index.html
+if [ ! -f "$STATIC" ] || [ -n "$(find web/src web/index.html -newer "$STATIC" 2>/dev/null | head -1)" ]; then
+	echo "Building the UI…"
+	(cd web && { [ -d node_modules ] || npm install --no-audit --no-fund; } && npm run build >/dev/null)
+fi
+
+JAR=service/target/api-0.0.1-SNAPSHOT.jar
+export JAVA_HOME=${JAVA_HOME:-$(/usr/libexec/java_home -v 25)}
+if [ ! -f "$JAR" ] || [ -n "$(find service/src service/pom.xml -newer "$JAR" 2>/dev/null | head -1)" ]; then
+	echo "Building the service…"
+	(cd service && mvn -q -DskipTests package)
+fi
+
+if lsof -ti tcp:8090 -sTCP:LISTEN >/dev/null 2>&1; then
+	echo "Something is already listening on port 8090 (an Earshot already running?)."
+	exit 1
+fi
+
+echo "Earshot: http://localhost:8090  (logs: data/logs/)"
+cd service
+exec "$JAVA_HOME/bin/java" -jar "$ROOT/$JAR"

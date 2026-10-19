@@ -1,0 +1,76 @@
+/* Design tokens, as in the Earshot UI canvas: calm utilitarian notes tool. */
+:root {
+  --bg: #F3F5F7;
+  --surface: #FFFFFF;
+  --surface-2: #F8F9FB;
+  --border: #DDE2E8;
+  --border-soft: #EEF1F5;
+  --border-strong: #C4CBD4;
+  --ink: #15202B;
+  --ink-2: #3C4757;
+  --muted: #586473;
+  --accent: #1D5BC8;
+  --accent-ink: #143F8C;
+  --accent-soft: #E3EBF8;
+  --me: #1D5BC8;
+  --others: #A84B0C;
+  --others-soft: #FBE9DF;
+  --ok: #0E6B47;
+  --ok-soft: #E7F4EE;
+  --warn: #8A4310;
+  --warn-soft: #F6EBDD;
+  --danger: #9A1C12;
+  --danger-soft: #FCE8E6;
+  --live: #B42318;
+  --cite: #FFF6D6;
+  --running: #F2B33D;
+  --font: 'Instrument Sans', system-ui, -apple-system, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0F1419;
+    --surface: #171D24;
+    --surface-2: #1C232B;
+    --border: #2A333D;
+    --border-soft: #222A33;
+    --border-strong: #3A4552;
+    --ink: #E6EAEF;
+    --ink-2: #C3CBD5;
+    --muted: #93A0AE;
+    --accent: #6C9BEF;
+    --accent-ink: #A9C4F5;
+    --accent-soft: #1E2C44;
+    --me: #7FA8F2;
+    --others: #F0A066;
+    --others-soft: #3A2618;
+    --ok: #6FD3A6;
+    --ok-soft: #15301F;
+    --warn: #F0B27A;
+    --warn-soft: #36271A;
+    --danger: #F49A90;
+    --danger-soft: #3A1B18;
+    --live: #F2655A;
+    --cite: #3A3315;
+    --running: #D99A2B;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; min-height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.45;
+}
+a { color: var(--accent); }
+a:hover { color: var(--accent-ink); }
+button, input, select, textarea { font: inherit; color: inherit; }
+h1, h2, h3 { margin: 0; letter-spacing: -0.01em; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.mono { font-family: var(--mono); }

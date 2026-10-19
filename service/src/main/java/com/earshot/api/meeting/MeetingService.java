@@ -1,0 +1,509 @@
+package com.earshot.api.meeting;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.WebSocket;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Service;
+
+import com.earshot.api.config.EarshotProperties;
+import com.earshot.api.job.JobWorker;
+import com.earshot.api.job.Jobs;
+import com.earshot.api.llm.LlmClient;
+import com.earshot.api.llm.LlmClient.Message;
+import com.earshot.api.ml.MlClient;
+import com.earshot.api.search.Indexer;
+import com.earshot.api.settings.Settings;
+import com.earshot.api.speaker.SpeakerNames;
+
+import jakarta.annotation.PostConstruct;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
+
+/** One live meeting at a time (PRD §6): capture → ML events → DB + browser, plus rolling context. */
+@Service
+public class MeetingService {
+
+	private static final Logger log = LoggerFactory.getLogger(MeetingService.class);
+	private static final DateTimeFormatter HMS = DateTimeFormatter.ofPattern("HH:mm:ss");
+	private final JdbcClient db;
+	private final MlClient ml;
+	private final LlmClient llm;
+	private final Settings settings;
+	private final Indexer indexer;
+	private final Jobs jobs;
+	private final JobWorker worker;
+	private final MeetingSockets sockets;
+	private final JsonMapper json;
+	private final Path meetingsDir;
+	private final ExecutorService liveIndex = Executors.newSingleThreadExecutor(Thread.ofVirtual().factory());
+	private volatile Live live;
+
+	public MeetingService(JdbcClient db, MlClient ml, LlmClient llm, Settings settings, Indexer indexer, Jobs jobs, JobWorker worker,
+			MeetingSockets sockets, JsonMapper json, EarshotProperties props) {
+		this.db = db;
+		this.ml = ml;
+		this.llm = llm;
+		this.settings = settings;
+		this.indexer = indexer;
+		this.jobs = jobs;
+		this.worker = worker;
+		this.sockets = sockets;
+		this.json = json;
+		this.meetingsDir = props.data().resolve("audio/meetings");
+	}
+
+	@PostConstruct
+	void init() {
+		worker.setLiveMeeting(() -> live != null);
+	}
+
+	static final class Live {
+		final long meetingId, recordingId, conversationId;
+		final String audioMode;
+		final Instant startedAt;
+		final ZoneId zone = ZoneId.systemDefault();
+		final AtomicInteger newSegments = new AtomicInteger();
+		final AtomicBoolean summarizing = new AtomicBoolean();
+		volatile Instant lastSummary = Instant.now();
+		volatile double lagS;
+		volatile double rtf;
+		volatile String warning;
+		volatile WebSocket ml;
+
+		Live(long meetingId, long recordingId, long conversationId, String audioMode, Instant startedAt) {
+			this.meetingId = meetingId;
+			this.recordingId = recordingId;
+			this.conversationId = conversationId;
+			this.audioMode = audioMode;
+			this.startedAt = startedAt;
+		}
+	}
+
+	public record Start(String title, String audioMode, String source, String device, Integer micChannel, Integer systemChannel,
+			Map<String, String> files, String preContext, String language, Double speed) {
+	}
+
+	public Long activeId() {
+		var l = live;
+		return l == null ? null : l.meetingId;
+	}
+
+	public synchronized long start(Start req) throws Exception {
+		if (live != null) {
+			throw new IllegalStateException("A meeting is already recording.");
+		}
+		String mode = req.audioMode() == null ? "mic" : req.audioMode();
+		Instant now = Instant.now();
+		ZoneId zone = ZoneId.systemDefault();
+		String lang = req.language() == null || req.language().isBlank() ? settings.str("language") : req.language();
+		long recId = db.sql("""
+				INSERT INTO recording (source_type, original_name, started_at, time_zone, started_at_source, language, status)
+				VALUES ('meeting', :t, :s, :tz, 'live', :l, 'live') RETURNING id""").param("t", req.title()).param("s", java.sql.Timestamp.from(now))
+				.param("tz", zone.getId()).param("l", lang).query(Long.class).single();
+		long meetingId = db.sql("""
+				INSERT INTO meeting (recording_id, title, pre_context, audio_mode, started_at) VALUES (:r, :t, :p, :m, :s) RETURNING id""")
+				.param("r", recId).param("t", req.title() == null || req.title().isBlank() ? "Meeting" : req.title())
+				.param("p", req.preContext()).param("m", mode).param("s", java.sql.Timestamp.from(now)).query(Long.class).single();
+		long convId = db.sql("""
+				INSERT INTO conversation (recording_id, meeting_id, start_offset_s, end_offset_s, started_at, local_date, title, stage, status)
+				VALUES (:r, :m, 0, 0, :s, :d, :t, 'live', 'live') RETURNING id""").param("r", recId).param("m", meetingId)
+				.param("s", java.sql.Timestamp.from(now)).param("d", now.atZone(zone).toLocalDate())
+				.param("t", req.title() == null || req.title().isBlank() ? null : req.title()).query(Long.class).single();
+		Path dir = meetingsDir.resolve(String.valueOf(meetingId));
+		Files.createDirectories(dir);
+		db.sql("UPDATE recording SET path = :p WHERE id = :id").param("p", dir.toString()).param("id", recId).update();
+		var l = new Live(meetingId, recId, convId, mode, now);
+		live = l;
+		try {
+			String session = "m" + meetingId;
+			ml.liveStart(session, lang, settings.num("live_max_segment_seconds"));
+			l.ml = HttpClient.newHttpClient().newWebSocketBuilder().connectTimeout(Duration.ofSeconds(5))
+					.buildAsync(URI.create(ml.liveEventsUrl(session)), new Listener(l)).join();
+			var channels = new LinkedHashMap<String, Integer>();
+			if (!"system".equals(mode)) {
+				channels.put("mic", req.micChannel() == null ? 0 : req.micChannel());
+			}
+			if (!"mic".equals(mode)) {
+				channels.put("system", req.systemChannel() == null ? ("system".equals(mode) ? 0 : 1) : req.systemChannel());
+			}
+			var body = new HashMap<String, Object>();
+			body.put("meeting_id", session);
+			body.put("out_dir", dir.toString());
+			body.put("source", req.source() == null ? "device" : req.source());
+			body.put("device", req.device());
+			body.put("channels", channels);
+			if (req.files() != null) {
+				var files = new HashMap<String, String>();
+				req.files().forEach((k, v) -> {
+					if (channels.containsKey(k)) {
+						files.put(k, v);
+					}
+				});
+				body.put("files", files);
+			}
+			body.put("speed", req.speed() == null ? 1.0 : req.speed());
+			ml.captureStart(body);
+		} catch (Exception e) {
+			// Nothing was recorded: leave no trace of the meeting (rows, folder, live session).
+			live = null;
+			try {
+				ml.liveStop("m" + meetingId);
+			} catch (Exception ignored) {
+				// the ML session may never have started
+			}
+			if (l.ml != null) {
+				l.ml.abort();
+			}
+			db.sql("DELETE FROM recording WHERE id = :id").param("id", recId).update();
+			deleteDir(dir);
+			log.warn("event=meeting_start_failed meeting={} reason={}", meetingId, e.getMessage());
+			throw e;
+		}
+		log.info("event=meeting_started meeting={} mode={} source={}", meetingId, mode, req.source());
+		return meetingId;
+	}
+
+	/** Receives the ML process's live events. */
+	final class Listener implements WebSocket.Listener {
+		private final Live l;
+		private final StringBuilder buf = new StringBuilder();
+
+		Listener(Live l) {
+			this.l = l;
+		}
+
+		@Override
+		public CompletionStage<?> onText(WebSocket ws, CharSequence data, boolean last) {
+			buf.append(data);
+			if (last) {
+				String text = buf.toString();
+				buf.setLength(0);
+				try {
+					onEvent(l, json.readTree(text));
+				} catch (Exception e) {
+					log.error("event=live_event_failed reason={}", e.toString());
+				}
+			}
+			ws.request(1);
+			return null;
+		}
+	}
+
+	private void onEvent(Live l, JsonNode ev) {
+		switch (ev.path("type").asString()) {
+			case "segment" -> {
+				String channel = ev.get("channel").asString();
+				double s = ev.get("start_s").asDouble(), e = ev.get("end_s").asDouble();
+				long id = db.sql("""
+						INSERT INTO segment (conversation_id, channel, live, start_s, end_s, text, words_json, confidence)
+						VALUES (:c, :ch, true, :s, :e, :t, CAST(:w AS jsonb), :p) RETURNING id""").param("c", l.conversationId)
+						.param("ch", channel).param("s", s).param("e", e).param("t", ev.get("text").asString())
+						.param("w", ev.get("words").toString()).param("p", ev.path("confidence").asDouble()).query(Long.class).single();
+				db.sql("UPDATE conversation SET end_offset_s = GREATEST(end_offset_s, :e) WHERE id = :id").param("e", e)
+						.param("id", l.conversationId).update();
+				String name = SpeakerNames.channelName(channel, l.audioMode);
+				sockets.broadcast(l.meetingId, Map.of("type", "segment", "segment", Map.of("id", id, "startS", s, "endS", e,
+						"clock", l.startedAt.plusMillis((long) (s * 1000)).atZone(l.zone).format(HMS), "speaker", name,
+						"key", "Others".equals(name) ? "others" : "Room".equals(name) ? "room" : "me", "channel", channel,
+						"text", ev.get("text").asString(), "live", true)));
+				l.newSegments.incrementAndGet();
+				liveIndex.submit(() -> {
+					try {
+						indexer.indexConversation(l.conversationId);
+					} catch (Exception ex) {
+						log.warn("event=live_index_failed reason={}", ex.getMessage());
+					}
+				});
+			}
+			case "status" -> {
+				l.lagS = ev.path("lag_s").asDouble();
+				l.rtf = ev.path("asr_rtf").asDouble();
+				sockets.broadcast(l.meetingId, status(l));
+			}
+			case "error" -> sockets.broadcast(l.meetingId, Map.of("type", "warning", "message", "Transcription error: " + ev.path("message").asString()));
+			default -> {
+			}
+		}
+	}
+
+	private Map<String, Object> status(Live l) {
+		var m = new HashMap<String, Object>();
+		m.put("type", "status");
+		m.put("lagS", l.lagS);
+		m.put("asrRtf", l.rtf);
+		m.put("llmQueue", llm.queueDepth());
+		m.put("elapsedS", Duration.between(l.startedAt, Instant.now()).toSeconds());
+		m.put("warning", l.warning);
+		return m;
+	}
+
+	@Scheduled(fixedDelay = 5_000)
+	public void tick() {
+		var l = live;
+		if (l == null) {
+			return;
+		}
+		try {
+			var st = ml.captureStatus("m" + l.meetingId);
+			var ch = st.path("channels");
+			// Silent call audio while the user is talking: the call app is probably not routed through BlackHole (PRD §6.2).
+			boolean silentSystem = ch.has("system") && ch.has("mic") && ch.path("system").path("silent_s").asDouble() >= 60
+					&& ch.path("mic").path("silent_s").asDouble() < 5;
+			l.warning = silentSystem ? "No call audio is being captured. Set the call app's speaker to the Multi-Output Device." : null;
+			if (st.path("error").isString()) {
+				l.warning = "Capture error: " + st.path("error").asString();
+			}
+		} catch (Exception e) {
+			if (live != l) {
+				return; // stopped while this tick ran: the capture process is gone on purpose
+			}
+			l.warning = "Capture process not responding.";
+		}
+		if (live != l) {
+			return;
+		}
+		sockets.broadcast(l.meetingId, status(l));
+		boolean due = l.newSegments.get() >= settings.num("summary_every_segments")
+				|| (l.newSegments.get() > 0 && Duration.between(l.lastSummary, Instant.now()).toSeconds() >= settings.num("summary_interval_seconds"));
+		// Summaries wait while ASR is behind: transcription has priority (PRD §8).
+		if (due && l.lagS < settings.num("live_lag_skip_summary_seconds") && l.summarizing.compareAndSet(false, true)) {
+			Thread.ofVirtual().start(() -> {
+				try {
+					summarize(l.meetingId, l.conversationId, settings.str("llm_live_model"));
+					l.newSegments.set(0);
+					l.lastSummary = Instant.now();
+				} catch (Exception e) {
+					log.warn("event=summary_failed meeting={} reason={}", l.meetingId, e.getMessage());
+				} finally {
+					l.summarizing.set(false);
+				}
+			});
+		}
+	}
+
+	/** Rolling summary, topics, decisions, action items and agenda status (PRD §6.5). */
+	public void summarize(long meetingId, long conversationId, String model) {
+		var meta = db.sql("SELECT pre_context, rolling_summary::text, started_at, audio_mode FROM meeting WHERE id = :id").param("id", meetingId)
+				.query((rs, i) -> new Object[] { rs.getString(1), rs.getString(2), rs.getTimestamp(3).toInstant(), rs.getString(4) }).single();
+		var segs = db.sql("SELECT start_s, end_s, channel, text, speaker_cluster_id FROM segment WHERE conversation_id = :c ORDER BY start_s")
+				.param("c", conversationId).query((rs, i) -> new Object[] { rs.getDouble(1), rs.getDouble(2), rs.getString(3), rs.getString(4) })
+				.list();
+		if (segs.isEmpty()) {
+			return;
+		}
+		int from = Math.max(0, segs.size() - 80);
+		var lines = new StringBuilder();
+		Instant start = (Instant) meta[2];
+		for (int i = from; i < segs.size(); i++) {
+			Object[] s = segs.get(i);
+			lines.append('[').append(i + 1).append("] ").append(start.plusMillis((long) ((double) s[0] * 1000)).atZone(ZoneId.systemDefault()).format(HMS))
+					.append(' ').append(SpeakerNames.channelName((String) s[2], (String) meta[3])).append(": ").append(s[3]).append('\n');
+		}
+		String previous = from > 0 && meta[1] != null ? "Summary of the earlier part:\n" + meta[1] + "\n\n" : "";
+		String agenda = meta[0] == null || ((String) meta[0]).isBlank() ? "" : "Agenda / pre-meeting notes:\n" + truncate((String) meta[0], 2000) + "\n\n";
+		String prompt = previous + agenda + "Transcript so far:\n" + lines + """
+
+				Return JSON only:
+				{"summary": ["3-6 bullets of the meeting so far"], "topics": ["topics covered"],
+				 "decisions": [{"text": "...", "refs": [line numbers]}],
+				 "action_items": [{"text": "...", "owner": "Me, Others or a name, or null", "refs": [line numbers]}]%s}
+				Only include what is in the transcript.""".formatted(agenda.isEmpty() ? ""
+						: ",\n \"agenda\": [{\"item\": \"agenda item\", \"state\": \"covered | partly | open\"}]");
+		JsonNode out = llm.parseJson(llm.chat(model, List.of(Message.system("You keep running meeting notes as JSON."), Message.user(prompt)), true));
+		var result = new LinkedHashMap<String, Object>();
+		result.put("summary", texts(out.path("summary")));
+		result.put("topics", texts(out.path("topics")));
+		result.put("decisions", withRefs(out.path("decisions"), segs, start));
+		result.put("action_items", withRefs(out.path("action_items"), segs, start));
+		var agendaOut = new ArrayList<Map<String, String>>();
+		out.path("agenda").forEach(a -> agendaOut.add(Map.of("item", a.path("item").asString(""), "state", a.path("state").asString("open"))));
+		result.put("agenda", agendaOut);
+		result.put("updatedAt", Instant.now().toString());
+		db.sql("UPDATE meeting SET rolling_summary = CAST(:s AS jsonb), summary_at = now() WHERE id = :id")
+				.param("s", json.writeValueAsString(result)).param("id", meetingId).update();
+		sockets.broadcast(meetingId, Map.of("type", "summary", "summary", result));
+		log.info("event=meeting_summarized meeting={} segments={}", meetingId, segs.size());
+	}
+
+	private static String truncate(String s, int n) {
+		return s.length() <= n ? s : s.substring(0, n);
+	}
+
+	private static List<String> texts(JsonNode arr) {
+		var out = new ArrayList<String>();
+		arr.forEach(x -> out.add(x.isString() ? x.asString() : x.path("text").asString(x.toString())));
+		return out;
+	}
+
+	private static List<Map<String, Object>> withRefs(JsonNode arr, List<Object[]> segs, Instant start) {
+		var out = new ArrayList<Map<String, Object>>();
+		arr.forEach(x -> {
+			var cites = new ArrayList<Map<String, Object>>();
+			x.path("refs").forEach(r -> {
+				int n = r.asInt();
+				if (n >= 1 && n <= segs.size()) {
+					Object[] s = segs.get(n - 1);
+					cites.add(Map.of("startS", s[0], "endS", s[1],
+							"clock", start.plusMillis((long) ((double) s[0] * 1000)).atZone(ZoneId.systemDefault()).format(HMS)));
+				}
+			});
+			var m = new LinkedHashMap<String, Object>();
+			m.put("text", x.isString() ? x.asString() : x.path("text").asString(""));
+			if (x.path("owner").isString()) {
+				m.put("owner", x.path("owner").asString());
+			}
+			m.put("citations", cites);
+			out.add(m);
+		});
+		return out;
+	}
+
+	public synchronized Map<String, Object> stop(long meetingId) {
+		var l = live;
+		if (l == null || l.meetingId != meetingId) {
+			throw new IllegalStateException("That meeting is not recording.");
+		}
+		JsonNode files;
+		try {
+			files = ml.captureStop("m" + meetingId);
+		} finally {
+			try {
+				ml.liveStop("m" + meetingId);
+			} catch (Exception e) {
+				log.warn("event=live_stop_failed reason={}", e.getMessage());
+			}
+			if (l.ml != null) {
+				l.ml.sendClose(WebSocket.NORMAL_CLOSURE, "stop");
+			}
+			live = null;
+		}
+		double duration = files.path("duration_s").asDouble();
+		if (duration < 1) {
+			discard(meetingId, l.recordingId);
+			return Map.of("meetingId", meetingId, "durationS", 0, "discarded", true);
+		}
+		db.sql("UPDATE meeting SET ended_at = now(), status = 'processing', capture_files = CAST(:f AS jsonb) WHERE id = :id")
+				.param("f", files.path("files").toString()).param("id", meetingId).update();
+		db.sql("UPDATE recording SET duration_s = :d, status = 'captured' WHERE id = :id").param("d", duration).param("id", l.recordingId).update();
+		db.sql("UPDATE conversation SET end_offset_s = GREATEST(end_offset_s, :d), status = 'queued' WHERE id = :id").param("d", duration)
+				.param("id", l.conversationId).update();
+		jobs.enqueue("post_meeting", l.recordingId, l.conversationId, meetingId);
+		worker.wake();
+		sockets.broadcast(meetingId, Map.of("type", "stopped"));
+		log.info("event=meeting_stopped meeting={} duration_s={}", meetingId, Math.round(duration));
+		return Map.of("meetingId", meetingId, "durationS", duration);
+	}
+
+	/** A meeting that captured no audio is removed rather than kept as an empty record. */
+	private void discard(long meetingId, long recordingId) {
+		db.sql("DELETE FROM recording WHERE id = :id").param("id", recordingId).update();
+		deleteDir(meetingsDir.resolve(String.valueOf(meetingId)));
+		sockets.broadcast(meetingId, Map.of("type", "discarded"));
+		log.info("event=meeting_discarded meeting={} reason=no_audio", meetingId);
+	}
+
+	private static void deleteDir(Path dir) {
+		try (var walk = Files.walk(dir)) {
+			for (Path f : walk.sorted(java.util.Comparator.reverseOrder()).toList()) {
+				Files.deleteIfExists(f);
+			}
+		} catch (java.io.IOException e) {
+			// best effort: an empty folder left behind is harmless
+		}
+	}
+
+	/**
+	 * After a service restart, meetings still marked live have no session here. Their capture may
+	 * still be running (it outlives a backend crash): stop it and process what was recorded.
+	 */
+	@org.springframework.context.event.EventListener(org.springframework.boot.context.event.ApplicationReadyEvent.class)
+	@org.springframework.core.annotation.Order(100)
+	public void recoverOrphans() {
+		var orphans = db.sql("SELECT m.id, m.recording_id, c.id FROM meeting m JOIN conversation c ON c.meeting_id = m.id WHERE m.status = 'live'")
+				.query((rs, i) -> new long[] { rs.getLong(1), rs.getLong(2), rs.getLong(3) }).list();
+		for (long[] o : orphans) {
+			double duration = 0;
+			JsonNode files = null;
+			try {
+				files = ml.captureStop("m" + o[0]);
+				duration = files.path("duration_s").asDouble();
+			} catch (Exception e) {
+				// capture no longer has it: use whatever chunks reached the disk
+				files = chunkFiles(o[0]);
+				duration = files == null ? 0 : 1;
+			}
+			if (duration < 1 || files == null) {
+				discard(o[0], o[1]);
+				continue;
+			}
+			db.sql("UPDATE meeting SET ended_at = now(), status = 'processing', capture_files = CAST(:f AS jsonb) WHERE id = :id")
+					.param("f", files.path("files").toString()).param("id", o[0]).update();
+			db.sql("UPDATE conversation SET status = 'queued' WHERE id = :id").param("id", o[2]).update();
+			jobs.enqueue("post_meeting", o[1], o[2], o[0]);
+			log.info("event=meeting_recovered meeting={}", o[0]);
+		}
+	}
+
+	/** Joined files are written at Stop; after a crash, join the 30 s chunks here. */
+	private JsonNode chunkFiles(long meetingId) {
+		Path dir = meetingsDir.resolve(String.valueOf(meetingId));
+		var files = new LinkedHashMap<String, String>();
+		for (String ch : List.of("mic", "system")) {
+			Path chDir = dir.resolve(ch);
+			try (var list = Files.list(chDir)) {
+				var chunks = list.filter(p -> p.getFileName().toString().endsWith(".flac")).sorted().toList();
+				if (chunks.isEmpty()) {
+					continue;
+				}
+				Path listFile = dir.resolve(ch + "-chunks.txt");
+				Files.writeString(listFile, String.join("\n", chunks.stream().map(c -> "file '" + c + "'").toList()));
+				Path out = dir.resolve(ch + ".flac");
+				var p = new ProcessBuilder("ffmpeg", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", listFile.toString(), out.toString())
+						.redirectErrorStream(true).start();
+				p.getInputStream().readAllBytes();
+				if (p.waitFor() == 0) {
+					files.put(ch, out.toString());
+				}
+			} catch (Exception e) {
+				// no chunks for this channel
+			}
+		}
+		return files.isEmpty() ? null : json.valueToTree(Map.of("files", files));
+	}
+
+	public Map<String, Object> view(long meetingId) {
+		var row = db.sql("""
+				SELECT m.id, m.title, m.audio_mode, m.started_at, m.ended_at, m.status, m.rolling_summary::text AS summary, m.pre_context,
+				       c.id AS conversation_id, m.recording_id
+				FROM meeting m JOIN conversation c ON c.meeting_id = m.id WHERE m.id = :id""").param("id", meetingId).query().singleRow();
+		var out = new LinkedHashMap<String, Object>(row);
+		out.put("summary", row.get("summary") == null ? null : json.readTree((String) row.get("summary")));
+		out.put("live", activeId() != null && activeId() == meetingId);
+		var l = live;
+		if (l != null && l.meetingId == meetingId) {
+			out.put("status_live", status(l));
+		}
+		return out;
+	}
+}

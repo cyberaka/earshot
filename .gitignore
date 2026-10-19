@@ -1,0 +1,13 @@
+.env
+data/
+ml/.venv/
+ml/**/__pycache__/
+service/target/
+service/src/main/resources/static/
+web/node_modules/
+web/dist/
+eval/audio/
+.DS_Store
+*.tsbuildinfo
+.pytest_cache/
+.ruff_cache/

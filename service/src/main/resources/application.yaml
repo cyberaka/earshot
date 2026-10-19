@@ -1,0 +1,81 @@
+spring:
+  application:
+    name: earshot-api
+  # The same .env the Python processes read (PRD §10.1).
+  config:
+    import: "optional:file:${EARSHOT_ENV_FILE:../.env}[.properties]"
+  datasource:
+    url: ${EARSHOT_DB_URL:jdbc:postgresql://127.0.0.1:5434/earshot}
+    username: ${EARSHOT_DB_USER:earshot}
+    password: ${EARSHOT_DB_PASSWORD:earshot}
+    hikari:
+      maximum-pool-size: ${EARSHOT_DB_POOL:8}
+  flyway:
+    enabled: true
+  servlet:
+    multipart:
+      # A recorder file is up to a few hours of audio; uploads stream to disk, not the heap.
+      max-file-size: 2GB
+      max-request-size: 4GB
+      file-size-threshold: 1MB
+  threads:
+    virtual:
+      enabled: true
+  jackson:
+    # Jackson 3 fails on an absent boolean by default; request bodies omit optional flags.
+    deserialization:
+      fail-on-null-for-primitives: false
+
+server:
+  address: 127.0.0.1
+  port: ${EARSHOT_PORT:8090}
+  shutdown: graceful
+
+logging:
+  level:
+    com.earshot: ${EARSHOT_LOG_LEVEL:INFO}
+
+earshot:
+  data-dir: ${EARSHOT_DATA_DIR:../data}
+  # Origins allowed to send state-changing requests and open WebSockets (PRD §9.4).
+  allowed-origins: ${EARSHOT_ALLOWED_ORIGINS:http://localhost:8090,http://127.0.0.1:8090,http://localhost:5173,http://127.0.0.1:5173}
+  ml:
+    base-url: ${EARSHOT_ML_URL:http://127.0.0.1:8091}
+    capture-url: ${EARSHOT_CAPTURE_URL:http://127.0.0.1:8092}
+    secret: ${EARSHOT_ML_SECRET:}
+    # When true, the service starts and supervises the Python processes itself.
+    manage: ${EARSHOT_ML_MANAGE:true}
+    python: ${EARSHOT_ML_PYTHON:../ml/.venv/bin/python}
+    workdir: ${EARSHOT_ML_WORKDIR:../ml}
+  llm:
+    base-url: ${EARSHOT_LLM_URL:http://127.0.0.1:1234/v1}
+    timeout-seconds: ${EARSHOT_LLM_TIMEOUT_SECONDS:180}
+
+  # Defaults for runtime settings; the Settings screen overrides them via the setting table.
+  defaults:
+    llm_batch_model: qwen2.5-7b-instruct
+    llm_live_model: qwen2.5-7b-instruct
+    embedding_model: text-embedding-nomic-embed-text-v1.5
+    language: en
+    conversation_gap_seconds: 120
+    max_conversation_minutes: 90
+    min_conversation_seconds: 20
+    me_threshold: 0.6
+    me_ambient_threshold: 0.45
+    person_threshold: 0.6
+    me_min_speech_seconds: 10
+    diarization_threshold: 0.55
+    summary_interval_seconds: 120
+    summary_every_segments: 8
+    qa_prompt_max_tokens: 3000
+    live_max_segment_seconds: 15
+    live_lag_skip_summary_seconds: 8
+    recorder_filename_pattern: "(\\d{8})[_-](\\d{6})"
+    raw_audio_retention_days: 30
+    ambient_audio_retention_days: 30
+    unknown_voiceprint_retention_days: 90
+    min_free_disk_gb: 20
+    backup_retention_days: 7
+    no_speech_prob: 0.6
+    avg_logprob: -1.0
+    compression_ratio: 2.4

@@ -1,0 +1,389 @@
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
+import { api, nearest, speakerColor, type Citation, type Devices, type MeetingSummary, type MeetingView, type SegmentView } from '../api'
+import { Answer, useAsk } from '../components/AskBox'
+import ui from '../components/ui.module.css'
+import s from './Meeting.module.css'
+
+export default function Meeting() {
+  const { id } = useParams()
+  return id ? <LiveMeeting key={id} id={Number(id)} /> : <StartMeeting />
+}
+
+const MODES = [
+  { value: 'mic_system', label: 'Online call', hint: 'Mic = you, system audio (BlackHole) = others. Needs headphones.' },
+  { value: 'mic', label: 'In-person', hint: 'Room audio through the mic. Speakers are separated after the meeting.' },
+  { value: 'system', label: 'Listen only', hint: 'System audio only: remote participants.' },
+]
+
+function StartMeeting() {
+  const navigate = useNavigate()
+  const [devices, setDevices] = useState<Devices | null>(null)
+  const [active, setActive] = useState<number | ''>('')
+  const [past, setPast] = useState<{ id: number; title: string; started_at: string; status: string; audio_mode: string }[]>([])
+  const [title, setTitle] = useState('')
+  const [mode, setMode] = useState('mic_system')
+  const [device, setDevice] = useState('')
+  const [micChannel, setMicChannel] = useState(0)
+  const [systemChannel, setSystemChannel] = useState(1)
+  const [preContext, setPreContext] = useState('')
+  const [language, setLanguage] = useState('en')
+  const [replay, setReplay] = useState(false)
+  const [micFile, setMicFile] = useState('')
+  const [systemFile, setSystemFile] = useState('')
+  const [override, setOverride] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    api.preflight().then(p => {
+      setDevices(p.devices)
+      setActive(p.activeMeetingId)
+      // An online call needs mic + system audio: preselect a multi-channel (Aggregate) input if there is one.
+      const multi = p.devices.inputs.filter(d => d.channels >= 2)
+      const pick = multi.find(d => /aggregate/i.test(d.name)) ?? multi[0]
+      if (pick) setDevice(pick.name)
+    }).catch(e => setError(`Capture process unreachable: ${e}`))
+    api.meetings().then(setPast).catch(() => {})
+  }, [])
+
+  const selected = devices?.inputs.find(d => d.name === (device || devices.default_input))
+  const speakers = mode === 'mic_system' && !replay && devices?.output_uses_speakers === true
+  const hasMulti = !!devices?.inputs.some(d => d.channels >= 2)
+  // Checked here so Start never opens a device that cannot work (capture refuses it too).
+  const channelProblem = !replay && devices && selected && (mode === 'mic_system'
+    ? (selected.channels < 2 ? 'twoChannels' : Math.max(micChannel, systemChannel) >= selected.channels ? 'range' : null)
+    : mode === 'mic' && micChannel >= selected.channels ? 'range' : null)
+  const blocked = (speakers && !override) || !!channelProblem
+
+  async function upload(file: File) {
+    try { const r = await api.meetingContext(file); setPreContext(p => (p ? p + '\n\n' : '') + r.text) } catch (e) { setError(String(e)) }
+  }
+
+  async function start(e: FormEvent) {
+    e.preventDefault()
+    setBusy(true)
+    setError(null)
+    try {
+      const body: Record<string, unknown> = { title, audioMode: mode, preContext, language, source: replay ? 'file' : 'device' }
+      if (replay) body.files = { mic: micFile, system: systemFile }
+      else { body.device = device || null; body.micChannel = micChannel; body.systemChannel = mode === 'system' ? 0 : systemChannel }
+      const r = await api.startMeeting(body)
+      navigate(`/meeting/${r.meetingId}`)
+    } catch (err) {
+      setError(String(err))
+      setBusy(false)
+    }
+  }
+
+  if (active) {
+    return <div className={ui.notice}>A meeting is recording. <Link to={`/meeting/${active}`}>Open it</Link></div>
+  }
+
+  return (
+    <>
+      <h1 className={s.pageTitle}>Start a meeting</h1>
+      <form className={s.setup} onSubmit={start}>
+        <section className={ui.card}>
+          <label className={ui.field}>Title (optional)
+            <input className={ui.input} value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Vendor review" />
+          </label>
+          <fieldset className={s.modes}>
+            <legend className={ui.sectionLabel}>Audio source</legend>
+            {MODES.map(m => (
+              <label key={m.value} className={mode === m.value ? s.modeOn : s.mode}>
+                <input type="radio" name="mode" value={m.value} checked={mode === m.value} onChange={() => setMode(m.value)} />
+                <span><b>{m.label}</b><span className={ui.muted}>{m.hint}</span></span>
+              </label>
+            ))}
+          </fieldset>
+          {!replay && (
+            <div className={s.row}>
+              <label className={ui.field}>Input device
+                <select className={ui.input} value={device} onChange={e => setDevice(e.target.value)}>
+                  <option value="">System default{devices?.default_input ? ` (${devices.default_input})` : ''}</option>
+                  {devices?.inputs.map(d => <option key={d.index} value={d.name}>{d.name} ({d.channels} ch)</option>)}
+                </select>
+              </label>
+              {mode === 'mic_system' && (
+                <>
+                  <label className={ui.field}>Mic channel
+                    <input type="number" min={0} max={(selected?.channels ?? 2) - 1} className={ui.input} value={micChannel} onChange={e => setMicChannel(Number(e.target.value))} />
+                  </label>
+                  <label className={ui.field}>System channel
+                    <input type="number" min={0} max={(selected?.channels ?? 2) - 1} className={ui.input} value={systemChannel} onChange={e => setSystemChannel(Number(e.target.value))} />
+                  </label>
+                </>
+              )}
+            </div>
+          )}
+          {channelProblem === 'twoChannels' && (
+            <div className={ui.error}>
+              “{selected!.name}” has {selected!.channels} input channel; an online call needs two: your mic and the call's audio.{' '}
+              {hasMulti
+                ? 'Pick the Aggregate Device (mic + BlackHole) above.'
+                : 'No such device on this Mac yet: install BlackHole and create an Aggregate Device (mic + BlackHole) as in the setup guide. Until then, use In-person.'}
+            </div>
+          )}
+          {channelProblem === 'range' && <div className={ui.error}>“{selected!.name}” has {selected!.channels} channel{selected!.channels === 1 ? '' : 's'}: channel numbers start at 0.</div>}
+          {speakers && (
+            <div className={ui.error}>
+              Sound is playing through the built-in speakers ({devices?.output}). The mic will pick up the call and others will be labelled as you. Use headphones.
+              <label className={s.override}><input type="checkbox" checked={override} onChange={e => setOverride(e.target.checked)} /> Start anyway</label>
+            </div>
+          )}
+          <label className={s.check}><input type="checkbox" checked={replay} onChange={e => setReplay(e.target.checked)} /> Replay audio files instead of a device (testing)</label>
+          {replay && (
+            <div className={s.row}>
+              {mode !== 'system' && <label className={ui.field}>Mic file (path on this Mac)<input className={ui.input} value={micFile} onChange={e => setMicFile(e.target.value)} placeholder="/path/to/mic.wav" /></label>}
+              {mode !== 'mic' && <label className={ui.field}>System file (path on this Mac)<input className={ui.input} value={systemFile} onChange={e => setSystemFile(e.target.value)} placeholder="/path/to/system.wav" /></label>}
+            </div>
+          )}
+          <label className={ui.field}>Language
+            <select className={ui.input} value={language} onChange={e => setLanguage(e.target.value)}>
+              <option value="en">English</option><option value="hi">Hindi</option><option value="auto">Auto-detect</option>
+            </select>
+          </label>
+        </section>
+        <section className={ui.card}>
+          <label className={ui.field}>Agenda or notes (optional)
+            <textarea className={ui.textarea} rows={8} value={preContext} onChange={e => setPreContext(e.target.value)} placeholder="Paste the agenda, one item per line…" />
+          </label>
+          <label className={ui.field}>Or upload .md, .txt or .pdf
+            <input type="file" accept=".md,.txt,.pdf" onChange={e => e.target.files?.[0] && upload(e.target.files[0])} />
+          </label>
+          {error && <div className={ui.error}>{error}</div>}
+          <button className={ui.live} disabled={busy || blocked}><span className={s.whiteDot} />{busy ? 'Starting…' : 'Start recording'}</button>
+          <span className={ui.muted}>Audio stays on this Mac. Answers come only from what is said.</span>
+        </section>
+      </form>
+      {past.length > 0 && (
+        <section className={ui.card}>
+          <h2 className={s.h2}>Past meetings</h2>
+          <div className={s.pastList}>
+            {past.map(m => (
+              <Link key={m.id} to={`/meeting/${m.id}`} className={s.past}>
+                <span>{m.title}</span>
+                <span className={ui.muted}>{new Date(m.started_at).toLocaleString()} · {m.status}</span>
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
+    </>
+  )
+}
+
+function localDate(t: string | number) {
+  const d = new Date(t)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+interface LiveStatus { lagS: number; asrRtf: number; llmQueue: number; elapsedS: number; warning: string | null }
+
+function clockOf(sec: number) {
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), x = Math.floor(sec % 60)
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(x).padStart(2, '0')}`
+}
+
+function LiveMeeting({ id }: { id: number }) {
+  const navigate = useNavigate()
+  const [m, setM] = useState<MeetingView | null>(null)
+  const [segments, setSegments] = useState<SegmentView[]>([])
+  const [summary, setSummary] = useState<MeetingSummary | null>(null)
+  const [status, setStatus] = useState<LiveStatus | null>(null)
+  const [stopping, setStopping] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [cited, setCited] = useState<Set<number>>(new Set())
+  const [q, setQ] = useState('')
+  const [discussed, setDiscussed] = useState('')
+  const listRef = useRef<HTMLDivElement>(null)
+  const rows = useRef<Map<number, HTMLDivElement>>(new Map())
+  const follow = useRef(true)
+  const { items, setItems, busy, run } = useAsk('meeting', String(id))
+
+  const reload = useCallback(async () => {
+    const mv = await api.meeting(id)
+    setM(mv)
+    setSummary(mv.summary)
+    const conv = await api.conversation(mv.conversation_id)
+    setSegments(conv.segments)
+  }, [id])
+
+  useEffect(() => {
+    reload().catch(e => setError(String(e)))
+    api.qaHistory('meeting', String(id)).then(h => setItems(h.map(x => ({ question: x.question, answer: x.answer, citations: JSON.parse(x.citations || '[]'), pending: false })))).catch(() => {})
+  }, [id, reload, setItems])
+
+  // Live events (B-2, B-3).
+  useEffect(() => {
+    if (!m?.live) return
+    const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/meetings/${id}`)
+    ws.onmessage = ev => {
+      const e = JSON.parse(ev.data)
+      if (e.type === 'discarded') { navigate('/meeting'); return }
+      if (e.type === 'segment') setSegments(prev => [...prev, e.segment].sort((a, b) => a.startS - b.startS))
+      else if (e.type === 'status') setStatus(e)
+      else if (e.type === 'summary') setSummary(e.summary)
+      else if (e.type === 'stopped') { setStatus(null); reload() }
+      else if (e.type === 'warning') setError(e.message)
+    }
+    return () => ws.close()
+  }, [m?.live, id, reload])
+
+  // After Stop, poll until the post-meeting pass is done.
+  useEffect(() => {
+    if (!m || m.live || m.status === 'done' || m.status === 'failed') return
+    const t = setInterval(() => reload().catch(() => {}), 5000)
+    return () => clearInterval(t)
+  }, [m, reload])
+
+  useEffect(() => {
+    if (follow.current && listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight
+  }, [segments])
+
+  function onCite(c: Citation | { startS: number }) {
+    const target = nearest(segments, c.startS)
+    if (!target) return
+    follow.current = false
+    setCited(new Set([target.id]))
+    rows.current.get(target.id)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
+
+  async function stop() {
+    setStopping(true)
+    try {
+      const r = await api.stopMeeting(id) as { discarded?: boolean }
+      if (r.discarded) { navigate('/meeting'); return }
+      await reload()
+    } catch (e) { setError(String(e)) }
+    setStopping(false)
+  }
+
+  function submit(e: FormEvent) {
+    e.preventDefault()
+    if (q.trim() && !busy) { run(q.trim()); setQ('') }
+  }
+
+  if (!m) return <span className={ui.muted}>{error ?? 'Loading…'}</span>
+  const elapsed = status?.elapsedS ?? (m.ended_at ? (new Date(m.ended_at).getTime() - new Date(m.started_at).getTime()) / 1000 : 0)
+  const modeLabel = m.audio_mode === 'mic_system' ? 'Mic + System' : m.audio_mode === 'mic' ? 'Mic only' : 'System only'
+  const hasAgenda = !!m.pre_context?.trim()
+
+  return (
+    <div className={s.liveWrap}>
+      <header className={s.liveHead}>
+        <div className={s.liveTitle}>
+          <span className={s.titleText}>{m.title}</span>
+          <span className={ui.muted}>{modeLabel}{hasAgenda ? ' · agenda attached' : ''}</span>
+        </div>
+        <div className={s.liveChips}>
+          {m.live
+            ? <span className={s.recChip}><span className={s.recDot} /><span className="mono">{clockOf(elapsed)}</span></span>
+            : <span className={s.neutralChip}>{m.status === 'done' ? 'Final transcript' : m.status === 'failed' ? 'Failed' : 'Post-meeting pass running…'}</span>}
+          {m.live && status && <span className={status.lagS > 10 ? s.badChip : s.neutralChip}>Lag {status.lagS.toFixed(1)} s</span>}
+          {m.live
+            ? <button className={ui.dark} onClick={stop} disabled={stopping}><span className={s.stopSq} />{stopping ? 'Stopping…' : 'Stop'}</button>
+            : m.status === 'done' && <Link className={ui.btn} to={`/day/${localDate(m.started_at)}/${m.conversation_id}`}>Open in daily notes</Link>}
+        </div>
+      </header>
+      {((m.live && status?.warning) || error) && <div className={ui.error}>{(m.live && status?.warning) || error}</div>}
+
+      <div className={s.liveBody}>
+        <section aria-label="Transcript" className={s.transcript}>
+          <div className={s.panelHead}>
+            <h2 className={s.h2}>{m.live ? 'Live transcript' : 'Transcript'}</h2>
+            {m.audio_mode === 'mic_system' && m.live && (
+              <span className={s.legend}>
+                <span><i style={{ background: 'var(--me)' }} />Me · mic</span>
+                <span><i style={{ background: 'var(--others)' }} />Others · system</span>
+              </span>
+            )}
+          </div>
+          <div className={s.lines} ref={listRef} onScroll={e => {
+            const el = e.currentTarget
+            follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60
+          }}>
+            {segments.length === 0 && <div className={ui.muted}>{m.live ? 'Listening… text appears a few seconds after each sentence.' : 'No transcript.'}</div>}
+            {segments.map(seg => (
+              <div key={seg.id} ref={el => { if (el) rows.current.set(seg.id, el) }} className={cited.has(seg.id) ? s.lineCited : s.line}>
+                <span className={s.clock}>{seg.clock}</span>
+                <span className={s.who} style={{ color: speakerColor(seg.key).fg }}>{seg.speaker}</span>
+                <span className={s.text}>{seg.text}</span>
+              </div>
+            ))}
+          </div>
+          {m.live && status && (
+            <div className={s.resources}>
+              <span>Transcription speed <b className="mono">{status.asrRtf.toFixed(2)}× real time</b></span>
+              <span>LLM queue <b className="mono">{status.llmQueue}</b></span>
+              <span>Audio on disk <b className="mono">✓</b></span>
+            </div>
+          )}
+        </section>
+
+        <aside className={s.side} aria-label="Meeting assistant">
+          <section className={ui.card}>
+            <div className={s.panelHead}>
+              <h2 className={s.h2}>Running summary</h2>
+              {summary?.updatedAt && <span className={ui.muted}>updated {new Date(summary.updatedAt).toLocaleTimeString()}</span>}
+            </div>
+            {!summary ? <span className={ui.muted}>Appears after the first few minutes.</span> : (
+              <>
+                <ul className={s.bullets}>{summary.summary.map((b, i) => <li key={i}>{b}</li>)}</ul>
+                {summary.topics.length > 0 && <div className={s.tags}>{summary.topics.map(t => <span key={t} className={ui.chip} style={{ background: 'var(--border-soft)', color: 'var(--ink-2)' }}>{t}</span>)}</div>}
+                {summary.agenda.length > 0 && (
+                  <>
+                    <h3 className={ui.sectionLabel}>Agenda</h3>
+                    {summary.agenda.map((a, i) => (
+                      <div key={i} className={s.agendaRow}>
+                        <span className={ui.chip} style={a.state === 'covered' ? { background: 'var(--ok-soft)', color: 'var(--ok)' } : a.state === 'partly' ? { background: 'var(--warn-soft)', color: 'var(--warn)' } : { background: 'var(--border-soft)', color: 'var(--ink-2)' }}>
+                          {a.state === 'covered' ? 'Covered' : a.state === 'partly' ? 'Partly' : 'Open'}
+                        </span>
+                        <span>{a.item}</span>
+                      </div>
+                    ))}
+                  </>
+                )}
+                {summary.decisions.length > 0 && (
+                  <>
+                    <h3 className={ui.sectionLabel}>Decisions</h3>
+                    {summary.decisions.map((d, i) => (
+                      <div key={i} className={s.decision}>
+                        <span>{d.text}</span>
+                        {d.citations.map((c, j) => <button key={j} type="button" className={ui.cite} onClick={() => onCite(c)}>{c.clock}</button>)}
+                      </div>
+                    ))}
+                  </>
+                )}
+              </>
+            )}
+          </section>
+
+          <section className={ui.card}>
+            <h2 className={s.h2}>Ask</h2>
+            <form className={s.discussed} onSubmit={e => { e.preventDefault(); if (discussed.trim() && !busy) { run(discussed.trim(), 'was_discussed', `Was ${discussed.trim()} discussed?`); setDiscussed('') } }}>
+              <label htmlFor="discussed" className="sr-only">Was X discussed?</label>
+              <span className={ui.muted}>Was</span>
+              <input id="discussed" className={ui.input} value={discussed} onChange={e => setDiscussed(e.target.value)} placeholder="the refund flow" />
+              <span className={ui.muted}>discussed?</span>
+              <button className={ui.btnSmall} disabled={busy || !discussed.trim()}>Check</button>
+            </form>
+            <div className={s.quick}>
+              <button className={ui.pill} disabled={busy} onClick={() => run('', 'suggest', 'Suggest a question I could ask')}>Suggest a question</button>
+              <button className={ui.pill} disabled={busy} onClick={() => run('', 'last5', 'Summarize the last 5 minutes')}>Last 5 minutes</button>
+              <button className={ui.pill} disabled={busy} onClick={() => run('', 'decisions', 'What decisions / action items so far?')}>Decisions so far</button>
+              {hasAgenda && <button className={ui.pill} disabled={busy} onClick={() => run('', 'open_agenda', "What's still open from the agenda?")}>Open agenda items</button>}
+            </div>
+            {items.length > 0 && <div className={s.answers}>{items.map((qa, i) => <Answer key={i} qa={qa} onCite={onCite} />)}</div>}
+            <form className={s.askForm} onSubmit={submit}>
+              <label htmlFor="ask-live" className="sr-only">Ask about this meeting</label>
+              <input id="ask-live" className={ui.input} value={q} onChange={e => setQ(e.target.value)} placeholder="Ask about this meeting…" />
+              <button className={ui.primary} disabled={busy || !q.trim()}>Ask</button>
+            </form>
+          </section>
+        </aside>
+      </div>
+    </div>
+  )
+}

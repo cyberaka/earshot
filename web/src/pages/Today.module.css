@@ -1,0 +1,96 @@
+.head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 24px; }
+.title { font-size: 30px; letter-spacing: -0.02em; }
+.dayNav { display: flex; gap: 6px; align-items: center; }
+.dayNav a { width: 44px; padding: 0; font-size: 18px; }
+.counts { margin-left: auto; font-size: 13px; color: var(--muted); }
+.linkBtn { border: 0; background: none; padding: 0; color: var(--accent); cursor: pointer; font-size: 13px; text-decoration: underline; }
+
+.columns { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
+.timeline { flex: 1 1 300px; max-width: 380px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  text-decoration: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--ink);
+}
+.card:hover { border-color: var(--border-strong); color: var(--ink); }
+.cardSelected { composes: card; border: 2px solid var(--accent); padding: 11px 13px; }
+.cardAmbient { composes: card; background: transparent; border: 1px dashed var(--border-strong); }
+.cardTime { display: flex; justify-content: space-between; gap: 8px; font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+.cardTitle { font-weight: 600; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.tags > span { font-size: 12.5px; font-weight: 500; padding: 2px 8px; }
+
+.detail {
+  flex: 999 1 460px;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 22px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.detailHead { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; }
+.detailTitle { font-size: 22px; }
+.meta { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+
+.speakers { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.nameBtn {
+  min-height: 32px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px dashed var(--muted);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 13px;
+  cursor: pointer;
+}
+.namePanel { border: 1px solid var(--border); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 10px; background: var(--surface-2); }
+.namePanelHead { display: flex; gap: 12px; align-items: baseline; }
+.nameRow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.check { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--ink-2); }
+
+.twoCol { display: flex; flex-wrap: wrap; gap: 18px; }
+.col { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.bullets { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; }
+.action { display: flex; gap: 8px; align-items: flex-start; }
+.action input { width: 18px; height: 18px; margin-top: 2px; flex: none; }
+
+.transcriptHead { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+.markBar { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); }
+.line { display: flex; gap: 12px; align-items: flex-start; padding: 8px 0; border-top: 1px solid var(--border-soft); }
+.lineCited { composes: line; background: var(--cite); border-radius: 6px; padding: 8px; margin: 0 -8px; }
+.play {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink-2);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.play:disabled { opacity: 0.4; cursor: default; }
+.markBox { flex: none; width: 20px; height: 20px; margin: 6px; }
+.clock { flex: none; width: 70px; font-family: var(--mono); font-size: 12.5px; color: var(--muted); padding-top: 6px; }
+.who { flex: none; width: 92px; font-weight: 600; padding-top: 4px; overflow: hidden; text-overflow: ellipsis; }
+.text { flex: 1; min-width: 0; padding-top: 4px; }
+.footer { display: flex; justify-content: flex-end; }
+
+@media (max-width: 760px) {
+  .timeline { max-width: none; }
+  .counts { margin-left: 0; }
+  .who { width: 70px; }
+  .clock { width: 62px; }
+}
