@@ -28,11 +28,15 @@ At runtime the Python processes run with `HF_HUB_OFFLINE=1`.
 ### Online calls (Mic + System)
 
 1. Install [BlackHole 2ch](https://existential.audio/blackhole/).
-2. Audio MIDI Setup → **Multi-Output Device**: your headphones + BlackHole. Set the call app's
-   speaker (or the system output) to it, so you still hear the call.
+2. Audio MIDI Setup → **Multi-Output Device**: your headphones + BlackHole (primary = headphones,
+   drift correction on BlackHole). Set the call app's speaker (or the system output) to it, so you
+   still hear the call. One per output you use, e.g. "Call Output Jabra" and "Call Output Mac".
+   In the call app the microphone stays your real mic, never the Aggregate Device.
 3. Audio MIDI Setup → **Aggregate Device**: your mic + BlackHole (drift correction on BlackHole).
-   In Earshot pick that device; mic is channel 0, BlackHole channel 1 (or as shown).
-4. Wear headphones. Through speakers the mic hears the call and others are labelled as you.
+   Tick the mic first so it is channel 0 and BlackHole channels 1–2. Keep "Aggregate" in the name:
+   Earshot preselects it for Online call. One per mic, e.g. "Aggregate Jabra" and "Aggregate Mac".
+4. Wear headphones. Through speakers the mic hears the call and others are labelled as you;
+   Earshot notices this from the audio within about 10 s of call speech and shows a warning.
 
 Closing the lid sleeps the Mac and stops recording unless an external display is attached.
 

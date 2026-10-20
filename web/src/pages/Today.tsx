@@ -187,7 +187,7 @@ function Conversation({ id, onChanged, seek, onSeekDone }: { id: number; onChang
             return unnamed
               ? <button key={sp.clusterId} className={s.nameBtn} onClick={() => setNaming(sp)}>{sp.name} · Name this speaker</button>
               : <button key={sp.clusterId} className={ui.chip} style={{ background: col.bg, color: col.fg, border: 0, cursor: 'pointer' }}
-                onClick={() => setNaming(sp)} title="Rename or reassign">{sp.name}</button>
+                onClick={() => setNaming(sp)} title={sp.recognised ? 'Recognised by voice: click to confirm or correct' : 'Rename or reassign'}>{sp.name}{sp.recognised && <span className={ui.byVoice}> · by voice</span>}</button>
           })}
         </div>
       )}
@@ -294,23 +294,32 @@ export function NameSpeaker({ speaker, people, onClose, onSaved }: { speaker: Sp
   const others = people.filter(p => !p.is_me)
   return (
     <div className={s.namePanel} role="group" aria-label={`Name ${speaker.name}`}>
-      <div className={s.namePanelHead}><b>Who is {speaker.name}?</b><span className={ui.muted}>{Math.round(speaker.speechS)} s of speech</span></div>
+      <div className={s.namePanelHead}>
+        <b>{speaker.recognised ? `Is this ${speaker.name}?` : `Who is ${speaker.name}?`}</b>
+        <span className={ui.muted}>{Math.round(speaker.speechS)} s of speech{speaker.recognised && speaker.matchScore !== null ? ` · recognised by voice (${speaker.matchScore.toFixed(2)})` : ''}</span>
+      </div>
       <div className={s.nameRow}>
+        {speaker.recognised && speaker.personId !== null && (
+          <button className={ui.btnSmall} disabled={busy} onClick={() => save({ personId: speaker.personId })}>Yes, it's {speaker.name}</button>
+        )}
         {speaker.suggestion && speaker.suggestionPersonId && (
           <button className={ui.btnSmall} disabled={busy} onClick={() => save(people.find(p => p.id === speaker.suggestionPersonId)?.is_me ? { me: true } : { personId: speaker.suggestionPersonId })}>
             Sounds like {speaker.suggestion}
           </button>
         )}
         <button className={ui.btnSmall} disabled={busy} onClick={() => save({ me: true })}>This is me</button>
-        {others.slice(0, 8).map(p => <button key={p.id} className={ui.btnSmall} disabled={busy} onClick={() => save({ personId: p.id })}>{p.name}</button>)}
+        {others.filter(p => !(speaker.recognised && p.id === speaker.personId)).slice(0, 8).map(p => <button key={p.id} className={ui.btnSmall} disabled={busy} onClick={() => save({ personId: p.id })}>{p.name}</button>)}
       </div>
       <form className={s.nameRow} onSubmit={e => { e.preventDefault(); if (name.trim()) save({ name: name.trim() }) }}>
         <label className="sr-only" htmlFor="new-name">New name</label>
         <input id="new-name" className={ui.input} placeholder="Type a new name" value={name} onChange={e => setName(e.target.value)} />
         <button className={ui.primary} disabled={busy || !name.trim()}>Save</button>
-        <label className={s.check}><input type="checkbox" checked={addToLibrary} onChange={e => setAdd(e.target.checked)} /> Add to voiceprint library</label>
         <button type="button" className={ui.btnSmall} onClick={onClose}>Cancel</button>
       </form>
+      <label className={s.check}>
+        <input type="checkbox" checked={addToLibrary} onChange={e => setAdd(e.target.checked)} />
+        <span>Remember this voice <span className={ui.muted}>· recognise them in future meetings and recordings</span></span>
+      </label>
       {error && <div className={ui.error}>{error}</div>}
     </div>
   )

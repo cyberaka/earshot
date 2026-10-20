@@ -161,9 +161,13 @@ class LiveDiarizer:
     """
 
     def __init__(self, threshold: float = 0.68, assign: float = 0.35, short_assign: float = 0.25,
-                 win: float = 3.0, hop: float = 1.5, min_window: float = 1.2, min_cluster_s: float = 3.0):
+                 win: float = 3.0, hop: float = 1.5, min_window: float = 1.2, min_cluster_s: float = 3.0,
+                 voice_window: float = 2.0):
         self.threshold, self.assign, self.short_assign = threshold, assign, short_assign
         self.win, self.hop, self.min_window, self.min_cluster_s = win, hop, min_window, min_cluster_s
+        # Only windows this long can found a voice: "Mm-hmm"s (1-2 s) sound unlike their speaker's talking
+        # voice (measured 2026-10-20: 0.8-0.9 cosine apart on a headset) and would form a speaker of their own.
+        self.voice_window = voice_window
         self.spans: list[tuple[float, float]] = []
         self.vecs: list[np.ndarray] = []
         self.labels: list[str] = []
@@ -221,7 +225,7 @@ class LiveDiarizer:
             long_enough = we - ws >= self.min_window
             if best is not None and score >= (self.assign if long_enough else self.short_assign):
                 lab = best
-            elif not long_enough and (self.last or best):
+            elif we - ws < self.voice_window and (self.last or best):
                 lab = self.last or best
             else:
                 lab = self._new_label()
@@ -239,12 +243,18 @@ class LiveDiarizer:
         if n < 3:
             return False
         V = np.stack(self.vecs)
-        raw = fcluster(linkage(V, method="average", metric="cosine"), t=self.threshold, criterion="distance")
+        # Voices come from the long windows; short ones join the nearest voice below.
+        long = [i for i, (s, e) in enumerate(self.spans) if e - s >= self.voice_window]
+        if len(long) < 3:
+            long = list(range(n))
+        raw = np.zeros(n, dtype=int)
+        raw[long] = fcluster(linkage(V[long], method="average", metric="cosine"), t=self.threshold, criterion="distance")
         cover: dict[int, float] = {}
-        for (s, e), k in zip(self.spans, raw):
-            cover[k] = cover.get(k, 0.0) + (e - s)
+        for i in long:
+            s, e = self.spans[i]
+            cover[raw[i]] = cover.get(raw[i], 0.0) + (e - s)
         big = [k for k, c in cover.items() if c >= self.min_cluster_s] or list(cover)
-        cent = {k: V[raw == k].mean(axis=0) for k in big}
+        cent = {k: V[long][raw[long] == k].mean(axis=0) for k in big}
         raw = np.array([k if k in cent else max(cent, key=lambda b: float(V[i] @ cent[b])) for i, k in enumerate(raw)])
         # Map new clusters onto existing labels by overlap, largest overlaps first, so labels are stable.
         overlap: dict[tuple[int, str], float] = {}

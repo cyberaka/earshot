@@ -35,6 +35,7 @@
   color: var(--ink);
   white-space: nowrap;
 }
+.byVoice { font-weight: 500; opacity: 0.75; }
 .btn:hover:not(:disabled) { background: var(--surface-2); }
 .btn:disabled { opacity: 0.55; cursor: default; }
 .btnSmall { composes: btn; min-height: 36px; padding: 0 12px; font-size: 13px; }
@@ -55,6 +56,7 @@
   color: var(--surface);
   font-weight: 600;
 }
+.dark:hover:not(:disabled) { background: color-mix(in srgb, var(--ink) 85%, var(--surface)); }
 
 .live {
   composes: btn;
@@ -63,6 +65,7 @@
   color: #FFFFFF;
   font-weight: 600;
 }
+.live:hover:not(:disabled) { background: color-mix(in srgb, var(--live) 85%, #000000); }
 
 .danger {
   composes: btnSmall;

@@ -18,8 +18,7 @@
 .modeOn { composes: mode; border: 2px solid var(--accent); padding: 9px 11px; }
 .row { display: flex; flex-wrap: wrap; gap: 12px; }
 .row > label { flex: 1 1 160px; }
-.check, .override { display: flex; gap: 8px; align-items: center; font-size: 14px; }
-.override { margin-top: 8px; color: var(--ink); }
+.check { display: flex; gap: 8px; align-items: center; font-size: 14px; }
 .whiteDot { width: 9px; height: 9px; border-radius: 50%; background: #FFFFFF; }
 .pastList { display: flex; flex-direction: column; }
 .past { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 0; border-top: 1px solid var(--border-soft); }
@@ -134,3 +133,6 @@
   font-weight: 600;
   text-align: center;
 }
+
+.deviceSwitch { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px 2px 12px; border-radius: 999px; background: var(--border-soft); color: var(--ink-2); }
+.deviceSwitch select { min-height: 30px; max-width: 200px; border: 0; border-radius: 999px; padding: 0 8px; background: var(--surface); color: var(--ink); font: inherit; font-weight: 600; }

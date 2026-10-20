@@ -56,7 +56,7 @@ earshot:
     llm_batch_model: qwen2.5-7b-instruct
     llm_live_model: qwen2.5-7b-instruct
     embedding_model: text-embedding-nomic-embed-text-v1.5
-    language: en
+    language: en+hi  # en, hi, auto, or a mix tried in order (en+hi: Hindi only when English is unsure)
     conversation_gap_seconds: 120
     max_conversation_minutes: 90
     min_conversation_seconds: 20

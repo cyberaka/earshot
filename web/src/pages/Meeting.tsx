@@ -34,11 +34,11 @@ function StartMeeting() {
   const [micChannel, setMicChannel] = useState(0)
   const [systemChannel, setSystemChannel] = useState(1)
   const [preContext, setPreContext] = useState('')
-  const [language, setLanguage] = useState('en')
+  const [language, setLanguage] = useState('en+hi')
+  useEffect(() => { api.settings().then(v => { if (typeof v.language === 'string') setLanguage(v.language) }).catch(() => {}) }, [])
   const [replay, setReplay] = useState(false)
   const [micFile, setMicFile] = useState('')
   const [systemFile, setSystemFile] = useState('')
-  const [override, setOverride] = useState(false)
   const [busy, setBusy] = useState(false)
   // Resuming defaults to the audio source the meeting last used.
   useEffect(() => { if (resumeId) api.meeting(resumeId).then(mv => { setResumeTitle(mv.title); setMode(mv.audio_mode); setRecordedS(mv.parts.reduce((t, p) => t + p.duration_s, 0)) }).catch(() => {}) }, [resumeId])
@@ -58,13 +58,12 @@ function StartMeeting() {
   }, [])
 
   const selected = devices?.inputs.find(d => d.name === (device || devices.default_input))
-  const speakers = mode === 'mic_system' && !replay && devices?.output_uses_speakers === true
   const hasMulti = !!devices?.inputs.some(d => d.channels >= 2 && !/blackhole/i.test(d.name))
   // Checked here so Start never opens a device that cannot work (capture refuses it too).
   const channelProblem = !replay && devices && selected && (mode === 'mic_system'
     ? (/blackhole/i.test(selected.name) ? 'blackholeOnly' : selected.channels < 2 ? 'twoChannels' : Math.max(micChannel, systemChannel) >= selected.channels ? 'range' : null)
     : mode === 'mic' && micChannel >= selected.channels ? 'range' : null)
-  const blocked = (speakers && !override) || !!channelProblem
+  const blocked = !!channelProblem
 
   async function upload(file: File) {
     try { const r = await api.meetingContext(file); setPreContext(p => (p ? p + '\n\n' : '') + r.text) } catch (e) { setError(String(e)) }
@@ -145,12 +144,6 @@ function StartMeeting() {
             <div className={ui.error}>BlackHole carries only the call's audio, not your mic. Create an Aggregate Device (your mic + BlackHole 2ch) in Audio MIDI Setup and pick that.</div>
           )}
           {channelProblem === 'range' && <div className={ui.error}>“{selected!.name}” has {selected!.channels} channel{selected!.channels === 1 ? '' : 's'}: channel numbers start at 0.</div>}
-          {speakers && (
-            <div className={ui.error}>
-              Sound is playing through the built-in speakers ({devices?.output}). The mic will pick up the call and others will be labelled as you. Use headphones.
-              <label className={s.override}><input type="checkbox" checked={override} onChange={e => setOverride(e.target.checked)} /> Start anyway</label>
-            </div>
-          )}
           <label className={s.check}><input type="checkbox" checked={replay} onChange={e => setReplay(e.target.checked)} /> Replay audio files instead of a device (testing)</label>
           {replay && (
             <div className={s.row}>
@@ -160,7 +153,7 @@ function StartMeeting() {
           )}
           <label className={ui.field}>Language
             <select className={ui.input} value={language} onChange={e => setLanguage(e.target.value)}>
-              <option value="en">English</option><option value="hi">Hindi</option><option value="auto">Auto-detect</option>
+              <option value="en+hi">English + Hindi</option><option value="en">English</option><option value="hi">Hindi</option><option value="auto">Auto-detect</option>
             </select>
           </label>
         </section>
@@ -221,11 +214,38 @@ function localDate(t: string | number) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
-interface LiveStatus { lagS: number; asrRtf: number; llmQueue: number; elapsedS: number; warning: string | null }
+interface LiveStatus { lagS: number; asrRtf: number; llmQueue: number; elapsedS: number; warning: string | null; device: string | null }
 
 function clockOf(sec: number) {
   const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), x = Math.floor(sec % 60)
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(x).padStart(2, '0')}`
+}
+
+/** Moves the live recording to another input (speakers -> headset) without stopping the meeting. */
+function DeviceSwitch({ id, mode, current, onSwitched, onError }: {
+  id: number; mode: string; current: string; onSwitched: (device: string) => void; onError: (e: string) => void
+}) {
+  const [devices, setDevices] = useState<Devices | null>(null)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => { api.preflight().then(p => setDevices(p.devices)).catch(() => {}) }, [])
+  // An online call needs mic + call audio on one device: only Aggregate-style inputs qualify.
+  const names = (devices?.inputs ?? []).filter(d => mode !== 'mic_system' || (d.channels >= 2 && !/blackhole/i.test(d.name))).map(d => d.name)
+  if (!names.includes(current)) names.unshift(current)
+
+  async function change(device: string) {
+    setBusy(true)
+    try { onSwitched((await api.switchMeetingDevice(id, device)).device ?? device) } catch (e) { onError(String(e)) }
+    setBusy(false)
+  }
+
+  return (
+    <label className={s.deviceSwitch} title="Switch the input without stopping, e.g. when you put your headset on">
+      <span>{busy ? 'Switching…' : 'Input'}</span>
+      <select value={current} disabled={busy || names.length < 2} onChange={e => change(e.target.value)}>
+        {names.map(n => <option key={n} value={n}>{n}</option>)}
+      </select>
+    </label>
+  )
 }
 
 function LiveMeeting({ id }: { id: number }) {
@@ -350,6 +370,8 @@ function LiveMeeting({ id }: { id: number }) {
           {m.live
             ? <span className={s.recChip}><span className={s.recDot} /><span className="mono">{clockOf(elapsed)}</span></span>
             : <span className={s.neutralChip}>{m.status === 'done' ? 'Final transcript' : m.status === 'failed' ? 'Failed' : 'Finishing…'}</span>}
+          {m.live && status?.device && <DeviceSwitch id={m.id} mode={m.audio_mode} current={status.device}
+            onSwitched={device => { setStatus(st => st && { ...st, device, warning: null }); setError(null) }} onError={setError} />}
           {m.live && status && <span className={status.lagS > 10 ? s.badChip : s.neutralChip}>Lag {status.lagS.toFixed(1)} s</span>}
           {m.live
             ? <button className={ui.dark} onClick={stop} disabled={stopping}><span className={s.stopSq} />{stopping ? 'Stopping…' : 'Stop'}</button>
@@ -376,7 +398,7 @@ function LiveMeeting({ id }: { id: number }) {
                 return unnamed
                   ? <button key={sp.clusterId} className={s.nameBtn} onClick={() => setNaming(sp)}>{sp.name} · Name</button>
                   : <button key={sp.clusterId} className={ui.chip} style={{ background: col.bg, color: col.fg, border: 0, cursor: 'pointer' }}
-                    onClick={() => setNaming(sp)} title="Rename or reassign">{sp.name}</button>
+                    onClick={() => setNaming(sp)} title={sp.recognised ? 'Recognised by voice: click to confirm or correct' : 'Rename or reassign'}>{sp.name}{sp.recognised && <span className={ui.byVoice}> · by voice</span>}</button>
               })}
               {m.live && <span className={ui.muted}>Labels settle as people talk; click to name.</span>}
             </div>

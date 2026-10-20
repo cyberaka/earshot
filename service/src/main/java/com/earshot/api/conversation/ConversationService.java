@@ -49,7 +49,7 @@ public class ConversationService {
 	}
 
 	public record SpeakerView(long clusterId, String name, Long personId, boolean isMe, String key, String channel,
-			double speechS, String suggestion, Long suggestionPersonId) {
+			double speechS, String suggestion, Long suggestionPersonId, boolean recognised, Double matchScore) {
 	}
 
 	public record ActionItem(long id, String text, String owner, boolean done) {
@@ -169,8 +169,9 @@ public class ConversationService {
 	}
 
 	private List<SpeakerView> speakers(long id, Map<Long, SpeakerNames.Speaker> speakers) {
-		var speechByCluster = db.sql("SELECT id, speech_s, embedding::text, person_id FROM speaker_cluster WHERE conversation_id = :c")
-				.param("c", id).query((rs, i) -> new Object[] { rs.getLong(1), rs.getDouble(2), rs.getString(3), rs.getObject(4) }).list();
+		var speechByCluster = db.sql("SELECT id, speech_s, embedding::text, person_id, manual, match_score FROM speaker_cluster WHERE conversation_id = :c")
+				.param("c", id).query((rs, i) -> new Object[] { rs.getLong(1), rs.getDouble(2), rs.getString(3), rs.getObject(4), rs.getBoolean(5),
+						(Double) rs.getObject(6) }).list();
 		var speakerViews = new ArrayList<SpeakerView>();
 		for (Object[] row : speechByCluster) {
 			var s = speakers.get((Long) row[0]);
@@ -187,8 +188,10 @@ public class ConversationService {
 							.query(String.class).single() + " (" + String.format("%.2f", best.score()) + ")";
 				}
 			}
+			// Named by the app from a remembered voice, not by the user: worth a glance.
+			boolean recognised = s.personId() != null && !s.isMe() && !(boolean) row[4];
 			speakerViews.add(new SpeakerView(s.clusterId(), s.name(), s.personId(), s.isMe(), key(s), s.channel(), (double) row[1],
-					suggestion, suggestionId));
+					suggestion, suggestionId, recognised, recognised ? (Double) row[5] : null));
 		}
 		speakerViews.sort((a, b) -> a.isMe() != b.isMe() ? (a.isMe() ? -1 : 1) : a.name().compareTo(b.name()));
 		return speakerViews;

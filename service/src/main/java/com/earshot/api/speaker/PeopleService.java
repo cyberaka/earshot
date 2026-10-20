@@ -95,11 +95,18 @@ public class PeopleService {
 				WHERE id = :id OR id = (SELECT origin_cluster_id FROM speaker_cluster WHERE id = :id)
 				   OR origin_cluster_id = COALESCE((SELECT origin_cluster_id FROM speaker_cluster WHERE id = :id), :id)""")
 				.param("p", target).param("id", clusterId).update();
+		// A correction: the voice saved under the earlier name was never theirs.
+		int removed = db.sql("DELETE FROM voiceprint WHERE cluster_id = :id").param("id", clusterId).update();
 		if (addToLibrary) {
 			db.sql("""
-					INSERT INTO voiceprint (person_id, embedding, source)
-					SELECT :p, embedding, CASE WHEN channel = 'system' THEN 'call' ELSE 'recorder' END FROM speaker_cluster
-					WHERE id = :id AND embedding IS NOT NULL""").param("p", target).param("id", clusterId).update();
+					INSERT INTO voiceprint (person_id, embedding, source, cluster_id)
+					SELECT :p, sc.embedding, CASE WHEN sc.channel = 'system' THEN 'call' WHEN c.meeting_id IS NOT NULL THEN 'laptop_mic'
+					       ELSE 'recorder' END, sc.id
+					FROM speaker_cluster sc JOIN conversation c ON c.id = sc.conversation_id
+					WHERE sc.id = :id AND sc.embedding IS NOT NULL""").param("p", target).param("id", clusterId).update();
+		}
+		if (addToLibrary || removed > 0) {
+			log.info("event=voice_remembered cluster={} person={} replaced={}", clusterId, target, removed);
 			rematch();
 		}
 		reexport("SELECT DISTINCT c.local_date FROM conversation c JOIN speaker_cluster sc ON sc.conversation_id = c.id WHERE sc.id = " + clusterId);

@@ -34,7 +34,7 @@ public class MeetingController {
 		this.db = db;
 	}
 
-	/** Devices, the headphone check (B-10) and whether a meeting is already live. */
+	/** Devices and whether a meeting is already live. */
 	@GetMapping("/preflight")
 	public Map<String, Object> preflight() {
 		JsonNode devices = ml.devices();
@@ -59,6 +59,11 @@ public class MeetingController {
 	@PostMapping("/{id}/resume")
 	public Map<String, Object> resume(@PathVariable long id, @RequestBody MeetingService.Start req) throws Exception {
 		return Map.of("meetingId", meetings.resume(id, req));
+	}
+
+	@PostMapping("/{id}/device")
+	public Map<String, Object> device(@PathVariable long id, @RequestBody MeetingService.Start req) {
+		return meetings.switchDevice(id, req);
 	}
 
 	@PostMapping("/{id}/stop")

@@ -39,7 +39,7 @@ Everything runs offline. No audio, transcript, or derived data leaves the machin
 
 - **Single user**, personal use only. The output is private notes.
 - **Speech:** primarily Indian English. Hindi and code-mixed speech should transcribe at Whisper's native quality.
-- **Language default:** Whisper language is pinned to `en` by default (auto-detect on short chunks flips languages and sometimes translates instead of transcribing). It can be overridden per import, per recording, and per meeting (`en`, `hi`, or `auto`). Revisit after the M-1 spike.
+- **Language default:** `en+hi` (owner decision 2026-10-20, after a Hindi/English call): each utterance is transcribed in English; only when Whisper is unsure (mean log probability below −0.5) is it re-run in Hindi, and the Hindi text (Devanagari) is kept if clearly more confident. English-only speech costs one pass as before. Pinned `en` translated or dropped Hindi ("Thank you." for 8 s of Hindi); `auto` decides per clip and still picked English. Overridable per import, recording and meeting (`en+hi`, `en`, `hi`, `auto`).
 - **Settings:** office conversations, cafeteria, travel, in-person meeting rooms, and online calls on the laptop.
 
 ## 4. Constraints & Assumptions
@@ -154,8 +154,9 @@ The user names speakers after enrichment has run, and later renames, merges, or 
 
 - **Hybrid meetings** (an online call joined from a room with other people present): the mic channel contains Me *and* the room. Live, the mic channel is labelled "Me / Room". The post-meeting pass diarizes the mic channel too (§6.6).
 - Mic + System uses one **macOS Aggregate Device** (mic + BlackHole, drift correction on for BlackHole), captured as a single multi-channel stream. This keeps both channels on one clock for the whole meeting.
-- **Headphones are required** for Mic + System. Without them the mic records the call from the speakers, and the remote voices land in the "Me" channel. If the current output device is, or is a Multi-Output Device that includes, the built-in speakers, the UI shows a blocking warning before Start (the user can override).
+- **Headphones are required** for Mic + System. Without them the mic records the call from the speakers, and the remote voices land in the "Me" channel. The check is made on the audio itself, not the output setting (the call app picks its own speaker, which macOS doesn't report): while recording, the capture process compares the loudness of the mic channel with the system channel every second; if the mic rises and falls with the call (correlation ≥ 0.5 in 4 of the last 10 checks with call audio), the meeting shows "Your mic is picking up the call" with a fix hint. (Owner decision 2026-10-20: the earlier pre-Start check of the system output gave false alarms when only the call app used headphones.)
 - **Silent system channel:** if the call app sends its audio straight to the headphones instead of the Multi-Output Device, BlackHole hears nothing. If the system channel stays silent for 60 s while the mic channel has speech, the UI shows "No call audio is being captured" with a fix hint.
+- **Switching input mid-meeting:** the live meeting has an Input control (e.g. Aggregate Mac → Aggregate Jabra when putting on a headset). Recording moves to the new device without stopping: same part, same timeline, about 0.1 s missed. A device that can't work is refused and recording continues on the old one.
 - The setup guide covers installing BlackHole, creating the Multi-Output Device (so the user still hears the call) and the Aggregate Device.
 
 ### 6.3 Live speaker attribution scope
@@ -221,7 +222,7 @@ A full re-run (re-transcribe and re-diarize each channel, as Mode A steps 6–11
 - B-7: Meeting audio saved to disk per channel for the post-meeting pass.
 - B-8: Stop finishes the meeting from the live transcript within seconds; a full re-run only on demand.
 - B-9: The UI stays responsive while the LLM is generating. Transcription never pauses for Q&A.
-- B-10: Headphone check before starting a Mic + System meeting, and a warning when the system channel is silent (§6.2).
+- B-10: A warning during a Mic + System meeting when the mic picks up the call (no headphones), and a warning when the system channel is silent (§6.2).
 - B-11: The Mac does not idle-sleep during a meeting (§8).
 
 ## 7. Speaker & Voiceprint Management
@@ -229,9 +230,10 @@ A full re-run (re-transcribe and re-diarize each channel, as Mode A steps 6–11
 - **Me enrollment:**
   - Primary: after the first processed day, the user marks a few segments "this is me". Their embeddings become Me voiceprints. This matches the recorder's microphone.
   - Also: record 30–60 s in the UI through the laptop mic (needed for live mode), or upload a clip.
-  - Voiceprints keep their `source` (recorder, laptop mic, upload). Matching uses the best score across all of a person's voiceprints.
+  - Voiceprints keep their `source` (recorder, laptop mic, upload, call). Matching uses the best score across all of a person's voiceprints.
 - **Person library:** name, aliases, embeddings (multiple), first seen, last seen, and conversation count.
 - **Naming flow:** clicking an unknown speaker shows "Name this speaker" with a suggested match if one is near threshold.
+- **Remembered voices (owner request, 2026-10-20):** the naming panel has "Remember this voice" (on by default), which saves the speaker's embedding as a voiceprint of the chosen person, linked to that speaker's cluster. Later meetings and recordings name them automatically; such names show "by voice" with the match score, and one click confirms ("Yes, it's X", which adds this voice too) or corrects. Correcting a name replaces the voiceprint saved from that speaker, so a wrong name never lingers in the library. In a live meeting the saved voiceprint follows the speaker's cluster as more speech arrives.
 - **Merge:** merge two people (e.g., duplicates created from different mic conditions).
 - **Delete:** deleting a person removes their voiceprints and unlinks their clusters, which render as "Unknown" everywhere (§5.5).
 - **Unknown voiceprint retention:** embeddings of clusters never linked to a person are deleted after `unknown_voiceprint_retention_days` (default 90). The transcript stays; the cluster can no longer be auto-matched.
@@ -381,7 +383,7 @@ interface MlClient  { BatchResult process(Path wav, String language); LiveSessio
 
 ### 10.3 Internal Python API (127.0.0.1, shared secret, called only by Spring Boot)
 - ML: `POST /ml/batch` (working copy path + language → words, turns, cluster embeddings; cancellable) · `POST /ml/embed-speaker` (clip or segment range → embedding) · `GET /ml/health`
-- Capture: `POST /capture/start` (device, channels, meeting id) · `POST /capture/stop` · `GET /capture/devices` (including current output device, for the headphone check) · `GET /capture/health`
+- Capture: `POST /capture/start` (device, channels, meeting id) · `POST /capture/stop` · `GET /capture/devices` · `GET /capture/health`
 - Live: `WS /ml/live/{id}` (transcript segments per channel, lag status)
 
 ### 10.4 Public API sketch (Spring Boot)
@@ -498,4 +500,4 @@ Stored in `eval/` (gitignored audio, committed labels and scripts):
 3. ~~Is FastAPI + React acceptable, or should the app layer be Spring Boot with Python ML workers?~~ **Resolved (2026-10-19):** Spring Boot + React, with Python ML processes, matching the existing stack (§10.1).
 4. Should the daily markdown be written straight into an Obsidian vault folder?
 5. Raw-audio retention defaults to 30 days (§9.4). Confirm.
-6. Hindi / code-mixed speech: v1 pins `en` with overrides (§3). Confirm or change after the M-1 spike.
+6. Hindi / code-mixed speech: resolved 2026-10-20 with `en+hi` (§3).

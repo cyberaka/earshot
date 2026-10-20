@@ -30,7 +30,8 @@ export default function Import() {
   const health = useHealth(15_000)
   const [zone, setZone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone)
   const [offset, setOffset] = useState('+00:00:00')
-  const [language, setLanguage] = useState('en')
+  const [language, setLanguage] = useState('en+hi')
+  useEffect(() => { api.settings().then(v => { if (typeof v.language === 'string') setLanguage(v.language) }).catch(() => {}) }, [])
   const [pending, setPending] = useState<Pending | null>(null)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -104,7 +105,7 @@ export default function Import() {
           </label>
           <label className={ui.field}>Language
             <select className={ui.input} value={language} onChange={e => setLanguage(e.target.value)}>
-              <option value="en">English</option><option value="hi">Hindi</option><option value="auto">Auto</option>
+              <option value="en+hi">English + Hindi</option><option value="en">English</option><option value="hi">Hindi</option><option value="auto">Auto</option>
             </select>
           </label>
           <button className={ui.primary} disabled={!pending || pending.rows.length === 0} onClick={process}>Process</button>

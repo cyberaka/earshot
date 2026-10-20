@@ -15,6 +15,7 @@ export interface DayView {
 export interface SpeakerView {
   clusterId: number; name: string; personId: number | null; isMe: boolean; key: string; channel: string
   speechS: number; suggestion: string | null; suggestionPersonId: number | null
+  recognised: boolean; matchScore: number | null
 }
 
 export interface SegmentView {
@@ -84,7 +85,7 @@ export interface MeetingView {
 
 export interface Devices {
   inputs: { index: number; name: string; channels: number; sample_rate: number }[]
-  default_input: string | null; output: string; output_uses_speakers: boolean | null
+  default_input: string | null
 }
 
 async function json<T>(res: Response): Promise<T> {
@@ -157,6 +158,7 @@ export const api = {
   startMeeting: (body: Record<string, unknown>) => send<{ meetingId: number }>('POST', '/api/meetings', body),
   stopMeeting: (id: number) => send('POST', `/api/meetings/${id}/stop`),
   resumeMeeting: (id: number, body: Record<string, unknown>) => send<{ meetingId: number }>('POST', `/api/meetings/${id}/resume`, body),
+  switchMeetingDevice: (id: number, device: string) => send<{ device: string | null }>('POST', `/api/meetings/${id}/device`, { device }),
   meeting: (id: number) => get<MeetingView>(`/api/meetings/${id}`),
   meetingContext: (file: File) => {
     const fd = new FormData()

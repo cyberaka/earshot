@@ -96,6 +96,7 @@ public class MeetingService {
 		volatile double lagS;
 		volatile double rtf;
 		volatile String warning;
+		volatile String device;
 		volatile WebSocket ml;
 		// Live speaker labels ("mic:L1") -> speaker_cluster ids, and ML segment keys -> segment ids.
 		final java.util.concurrent.ConcurrentHashMap<String, Long> clusters = new java.util.concurrent.ConcurrentHashMap<>();
@@ -112,6 +113,34 @@ public class MeetingService {
 
 	public record Start(String title, String audioMode, String source, String device, Integer micChannel, Integer systemChannel,
 			Map<String, String> files, String preContext, String language, Double speed) {
+	}
+
+	private static Map<String, Integer> channels(String mode, Start req) {
+		var channels = new LinkedHashMap<String, Integer>();
+		if (!"system".equals(mode)) {
+			channels.put("mic", req.micChannel() == null ? 0 : req.micChannel());
+		}
+		if (!"mic".equals(mode)) {
+			channels.put("system", req.systemChannel() == null ? ("system".equals(mode) ? 0 : 1) : req.systemChannel());
+		}
+		return channels;
+	}
+
+	/** Switches the live meeting's input (speakers -> headset) without stopping: same part, same timeline. */
+	public Map<String, Object> switchDevice(long meetingId, Start req) {
+		var l = live;
+		if (l == null || l.meetingId != meetingId) {
+			throw new IllegalStateException("Meeting " + meetingId + " is not live.");
+		}
+		var body = new HashMap<String, Object>();
+		body.put("device", req.device());
+		body.put("channels", channels(l.audioMode, req));
+		l.device = ml.captureSwitch("m" + meetingId, body);
+		l.warning = null; // the leak check starts over on the new device
+		log.info("event=meeting_device_switched meeting={} device={}", meetingId, l.device);
+		var st = status(l);
+		sockets.broadcast(meetingId, st);
+		return st;
 	}
 
 	public Long activeId() {
@@ -206,13 +235,7 @@ public class MeetingService {
 			ml.liveStart(session, lang, settings.num("live_max_segment_seconds"), seeds);
 			l.ml = HttpClient.newHttpClient().newWebSocketBuilder().connectTimeout(Duration.ofSeconds(5))
 					.buildAsync(URI.create(ml.liveEventsUrl(session)), new Listener(l)).join();
-			var channels = new LinkedHashMap<String, Integer>();
-			if (!"system".equals(mode)) {
-				channels.put("mic", req.micChannel() == null ? 0 : req.micChannel());
-			}
-			if (!"mic".equals(mode)) {
-				channels.put("system", req.systemChannel() == null ? ("system".equals(mode) ? 0 : 1) : req.systemChannel());
-			}
+			var channels = channels(mode, req);
 			var body = new HashMap<String, Object>();
 			body.put("meeting_id", session);
 			body.put("out_dir", dir.toString());
@@ -324,6 +347,9 @@ public class MeetingService {
 					long id = cluster(l, channel, sp.get("label").asString());
 					db.sql("UPDATE speaker_cluster SET embedding = CAST(:e AS vector), speech_s = :s WHERE id = :id")
 							.param("e", sp.get("embedding").toString()).param("s", sp.path("speech_s").asDouble()).param("id", id).update();
+					// A voice remembered early in the meeting improves as the person keeps talking.
+					db.sql("UPDATE voiceprint v SET embedding = sc.embedding FROM speaker_cluster sc WHERE sc.id = :id AND v.cluster_id = sc.id AND v.person_id = sc.person_id")
+							.param("id", id).update();
 					matcher.matchLive(id, "mic_system".equals(l.audioMode));
 				}
 				broadcastSpeakers(l);
@@ -406,6 +432,7 @@ public class MeetingService {
 		m.put("llmQueue", llm.queueDepth());
 		m.put("elapsedS", Duration.between(l.startedAt, Instant.now()).toSeconds());
 		m.put("warning", l.warning);
+		m.put("device", l.device);
 		return m;
 	}
 
@@ -418,10 +445,15 @@ public class MeetingService {
 		try {
 			var st = ml.captureStatus("m" + l.meetingId);
 			var ch = st.path("channels");
+			l.device = st.path("device").asString(null);
 			// Silent call audio while the user is talking: the call app is probably not routed through BlackHole (PRD §6.2).
 			boolean silentSystem = ch.has("system") && ch.has("mic") && ch.path("system").path("silent_s").asDouble() >= 60
 					&& ch.path("mic").path("silent_s").asDouble() < 5;
 			l.warning = silentSystem ? "No call audio is being captured. Set the call app's speaker to the Multi-Output Device." : null;
+			// The call heard by the mic: speakers instead of headphones, so others would be labelled as the user.
+			if (st.path("echo").path("leaking").asBoolean(false)) {
+				l.warning = "Your mic is picking up the call (speakers?): other people may be labelled as you. Switch to headphones.";
+			}
 			if (st.path("error").isString()) {
 				l.warning = "Capture error: " + st.path("error").asString();
 			}

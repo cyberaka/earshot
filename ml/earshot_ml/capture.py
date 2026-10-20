@@ -9,9 +9,9 @@ import asyncio
 import logging
 import os
 import queue
-import subprocess
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +22,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 from scipy.signal import resample_poly
 
+from . import echo
 from .config import CAPTURE_PORT, ML_PORT, SAMPLE_RATE, SECRET
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -85,6 +86,15 @@ class Channel:
         return out
 
 
+@dataclass
+class Source:
+    name: str
+    channels: dict[str, int]
+    sr: int
+    stream: object
+    frames: "queue.Queue[np.ndarray]"
+
+
 class Recording:
     def __init__(self, req: Start):
         self.req = req
@@ -94,6 +104,8 @@ class Recording:
         self.started = time.time()
         self.threads: list[threading.Thread] = []
         self.error: str | None = None
+        # Online call: watch for the call leaking into the mic (speakers instead of headphones).
+        self.echo = echo.Detector() if {"mic", "system"} <= set(self.channels) else None
 
     def start(self) -> None:
         """Opens the source now, so a bad device or file fails the Start request, not a thread later."""
@@ -125,59 +137,96 @@ class Recording:
         for i in range(0, n, step):
             if self.stop_event.is_set():
                 break
+            frames = {}
             for name, a in mono.items():
                 frame = a[i:i + step]
-                self.channels[name].push(frame if len(frame) == step else np.pad(frame, (0, step - len(frame))))
+                frames[name] = frame if len(frame) == step else np.pad(frame, (0, step - len(frame)))
+                self.channels[name].push(frames[name])
+            self._check_echo(frames)
             time.sleep(max(0.0, t0 + (i + step) / SAMPLE_RATE / self.req.speed - time.monotonic()))
         log.info("event=replay_done meeting=%s", self.req.meeting_id)
 
     def _open_device(self) -> None:
+        self.src = self._open(self.req.device, self.req.channels)
+        self.src_lock = threading.Lock()
+
+    def _open(self, device: str | None, channels: dict[str, int]) -> "Source":
         import sounddevice as sd
         try:
-            info = sd.query_devices(self.req.device, "input") if self.req.device else sd.query_devices(kind="input")
+            info = sd.query_devices(device, "input") if device else sd.query_devices(kind="input")
         except Exception:
-            raise ValueError(f"Input device not found: {self.req.device or 'system default'}") from None
-        needed = max(self.req.channels.values()) + 1
+            raise ValueError(f"Input device not found: {device or 'system default'}") from None
+        needed = max(channels.values()) + 1
         if info["max_input_channels"] < needed:
-            if "system" in self.req.channels and len(self.req.channels) > 1:
+            if "system" in channels and len(channels) > 1:
                 raise ValueError(
                     f"\"{info['name']}\" has {info['max_input_channels']} input channel(s); an online call needs {needed}: "
                     "your mic plus system audio. Pick the Aggregate Device (mic + BlackHole) from the setup guide, "
                     "or use In-person.")
             raise ValueError(f"\"{info['name']}\" has {info['max_input_channels']} input channel(s); channel {needed - 1} does not exist.")
-        self.sr = int(info["default_samplerate"])
-        self.frames: "queue.Queue[np.ndarray]" = queue.Queue()
+        sr = int(info["default_samplerate"])
+        frames: "queue.Queue[np.ndarray]" = queue.Queue()
 
         def callback(indata, _frames, _time, status):
             if status:
                 log.warning("event=capture_status status=%s", status)
-            self.frames.put(indata.copy())
+            frames.put(indata.copy())
 
         try:
-            self.stream = sd.InputStream(device=info["index"], channels=needed, samplerate=self.sr, dtype="float32",
-                                         blocksize=int(self.sr * FRAME_S), callback=callback)
-            self.stream.start()
+            stream = sd.InputStream(device=info["index"], channels=needed, samplerate=sr, dtype="float32",
+                                    blocksize=int(sr * FRAME_S), callback=callback)
+            stream.start()
         except Exception as e:
             raise ValueError(f"Could not open \"{info['name']}\": {e}") from None
+        return Source(info["name"], dict(channels), sr, stream, frames)
+
+    def switch(self, device: str | None, channels: dict[str, int]) -> str:
+        """Moves recording to another input mid-meeting (speakers -> headset). The new device opens
+        before the old one closes, so the timeline, transcript and part carry on with ~0.1 s missed."""
+        if self.req.source != "device":
+            raise ValueError("A replayed meeting cannot switch devices.")
+        if set(channels) != set(self.channels):
+            raise ValueError(f"Channels must stay {sorted(self.channels)}.")
+        with self.src_lock:
+            new = self._open(device, channels)
+            old, self.src = self.src, new
+            if self.echo is not None:
+                self.echo = echo.Detector()  # the old device's leak history says nothing about the new one
+        old.stream.close()
+        log.info("event=capture_switched meeting=%s from=%s to=%s", self.req.meeting_id, old.name, new.name)
+        return new.name
 
     def _device(self) -> None:
-        sr = self.sr
         try:
             while not self.stop_event.is_set():
+                src = self.src
                 try:
-                    block = self.frames.get(timeout=0.5)
+                    block = src.frames.get(timeout=0.5)
                 except queue.Empty:
-                    if not self.stream.active:
+                    if src is self.src and not src.stream.active:
                         raise RuntimeError("the input device stopped (unplugged?)")
                     continue
-                for name, idx in self.req.channels.items():
+                if src is not self.src:
+                    continue  # switched: the old device's last blocks are dropped
+                frames = {}
+                for name, idx in src.channels.items():
                     x = block[:, idx]
-                    self.channels[name].push(resample_poly(x, SAMPLE_RATE, sr).astype(np.float32) if sr != SAMPLE_RATE else x)
+                    frames[name] = resample_poly(x, SAMPLE_RATE, src.sr).astype(np.float32) if src.sr != SAMPLE_RATE else x
+                    self.channels[name].push(frames[name])
+                self._check_echo(frames)
         except Exception as e:
             self.error = str(e)
             log.exception("event=capture_failed meeting=%s", self.req.meeting_id)
         finally:
-            self.stream.close()
+            self.src.stream.close()
+
+    def _check_echo(self, frames: dict[str, np.ndarray]) -> None:
+        if self.echo is not None:
+            try:
+                self.echo.feed(frames["mic"], frames["system"])
+            except Exception:
+                log.exception("event=echo_check_failed meeting=%s", self.req.meeting_id)
+                self.echo = None
 
     def _stream(self, ch: Channel) -> None:
         """Streams to the ML process; reconnects so an ML restart only pauses live text."""
@@ -209,30 +258,13 @@ class Recording:
 
     def status(self) -> dict:
         return {"meeting_id": self.req.meeting_id, "elapsed_s": round(time.time() - self.started, 1), "error": self.error,
+                "device": self.src.name if getattr(self, "src", None) else None,
                 "channels": {n: {"seconds": round(c.samples / SAMPLE_RATE, 1), "silent_s": round(c.silent_s, 1)}
-                             for n, c in self.channels.items()}}
+                             for n, c in self.channels.items()},
+                "echo": None if self.echo is None else {"leaking": self.echo.leaking, "score": self.echo.score}}
 
 
 ACTIVE: dict[str, Recording] = {}
-
-
-def _default_output() -> str:
-    try:
-        import sounddevice as sd
-        return sd.query_devices(kind="output")["name"]
-    except Exception:
-        return ""
-
-
-def _output_has_speakers(name: str) -> bool | None:
-    """True if audio plays from built-in speakers; None if a Multi-Output Device hides it."""
-    if "Multi-Output" in name:
-        try:
-            out = subprocess.run(["system_profiler", "SPAudioDataType"], capture_output=True, text=True, timeout=10).stdout
-            return "Speakers" in out and "Multi-Output" in out and "Headphones" not in out
-        except Exception:
-            return None
-    return "Speakers" in name
 
 
 @app.get("/capture/health")
@@ -256,12 +288,11 @@ def devices():
     _rescan()
     inputs = [{"index": i, "name": d["name"], "channels": d["max_input_channels"], "sample_rate": d["default_samplerate"]}
               for i, d in enumerate(sd.query_devices()) if d["max_input_channels"] > 0]
-    out = _default_output()
     try:
         default_input = sd.query_devices(kind="input")["name"]
     except Exception:
         default_input = None
-    return {"inputs": inputs, "default_input": default_input, "output": out, "output_uses_speakers": _output_has_speakers(out)}
+    return {"inputs": inputs, "default_input": default_input}
 
 
 @app.post("/capture/heartbeat", dependencies=[Depends(check_secret)])
@@ -293,6 +324,22 @@ def status(meeting_id: str):
     if not rec:
         raise HTTPException(status_code=404)
     return rec.status()
+
+
+class Switch(BaseModel):
+    device: str | None = None
+    channels: dict[str, int]
+
+
+@app.post("/capture/{meeting_id}/device", dependencies=[Depends(check_secret)])
+def switch(meeting_id: str, req: Switch):
+    rec = ACTIVE.get(meeting_id)
+    if not rec:
+        raise HTTPException(status_code=404)
+    try:
+        return {"device": rec.switch(req.device, req.channels)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
 
 
 @app.post("/capture/{meeting_id}/stop", dependencies=[Depends(check_secret)])

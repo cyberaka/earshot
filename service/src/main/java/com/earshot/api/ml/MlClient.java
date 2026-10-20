@@ -113,6 +113,21 @@ public class MlClient {
 		return capture.get().uri("/capture/{id}/status", meetingId).retrieve().body(JsonNode.class);
 	}
 
+	/** Moves a live recording to another input device; a device that can't be opened is a 400 with the reason. */
+	public String captureSwitch(String meetingId, Map<String, Object> body) {
+		try {
+			return post(capture, "/capture/" + meetingId + "/device", body).path("device").asString();
+		} catch (org.springframework.web.client.HttpClientErrorException e) {
+			String detail = e.getResponseBodyAsString();
+			try {
+				detail = tools.jackson.databind.json.JsonMapper.builder().build().readTree(detail).path("detail").asString(detail);
+			} catch (RuntimeException ignored) {
+				// not JSON: use the body as is
+			}
+			throw new IllegalArgumentException(detail, e);
+		}
+	}
+
 	public JsonNode captureStop(String meetingId) {
 		return post(capture, "/capture/" + meetingId + "/stop", Map.of());
 	}
