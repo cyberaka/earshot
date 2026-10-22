@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { api, fmtElapsed, nearest, speakerColor, type Citation, type Devices, type MeetingSummary, type MeetingView, type NoteView, type Person, type SegmentView, type SpeakerView } from '../api'
+import { api, LANGUAGES, fmtElapsed, nearest, speakerColor, type Citation, type Devices, type MeetingSummary, type MeetingView, type NoteView, type Person, type SegmentView, type SpeakerView } from '../api'
 import { Answer, useAsk } from '../components/AskBox'
 import { NoteEditor, NoteItem } from '../components/Notes'
 import { NameSpeaker } from './Today'
@@ -153,7 +153,7 @@ function StartMeeting() {
           )}
           <label className={ui.field}>Language
             <select className={ui.input} value={language} onChange={e => setLanguage(e.target.value)}>
-              <option value="en+hi">English + Hindi</option><option value="en">English</option><option value="hi">Hindi</option><option value="auto">Auto-detect</option>
+              {LANGUAGES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
             </select>
           </label>
         </section>
@@ -214,7 +214,7 @@ function localDate(t: string | number) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
-interface LiveStatus { lagS: number; asrRtf: number; llmQueue: number; elapsedS: number; warning: string | null; device: string | null }
+interface LiveStatus { lagS: number; asrRtf: number; llmQueue: number; elapsedS: number; warning: string | null; device: string | null; language?: string | null }
 
 function clockOf(sec: number) {
   const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), x = Math.floor(sec % 60)
@@ -248,6 +248,27 @@ function DeviceSwitch({ id, mode, current, onSwitched, onError }: {
   )
 }
 
+function LanguageSwitch({ id, current, onSwitched, onError }: {
+  id: number; current: string; onSwitched: (language: string) => void; onError: (e: string) => void
+}) {
+  const [busy, setBusy] = useState(false)
+  async function change(language: string) {
+    setBusy(true)
+    try { onSwitched((await api.switchMeetingLanguage(id, language)).language ?? language) } catch (e) { onError(String(e)) }
+    setBusy(false)
+  }
+  const known = LANGUAGES.some(([v]) => v === current)
+  return (
+    <label className={s.deviceSwitch} title="Applies from the next sentence; earlier lines stay as they were">
+      <span>{busy ? 'Switching…' : 'Language'}</span>
+      <select value={current} disabled={busy} onChange={e => change(e.target.value)}>
+        {!known && <option value={current}>{current}</option>}
+        {LANGUAGES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+      </select>
+    </label>
+  )
+}
+
 function LiveMeeting({ id }: { id: number }) {
   const navigate = useNavigate()
   const [m, setM] = useState<MeetingView | null>(null)
@@ -256,6 +277,7 @@ function LiveMeeting({ id }: { id: number }) {
   const [speakers, setSpeakers] = useState<SpeakerView[]>([])
   const [people, setPeople] = useState<Person[]>([])
   const [naming, setNaming] = useState<SpeakerView | null>(null)
+  const [namingLine, setNamingLine] = useState<{ id: number; text: string } | null>(null)
   const [summary, setSummary] = useState<MeetingSummary | null>(null)
   const [status, setStatus] = useState<LiveStatus | null>(null)
   const [stopping, setStopping] = useState(false)
@@ -372,6 +394,8 @@ function LiveMeeting({ id }: { id: number }) {
             : <span className={s.neutralChip}>{m.status === 'done' ? 'Final transcript' : m.status === 'failed' ? 'Failed' : 'Finishing…'}</span>}
           {m.live && status?.device && <DeviceSwitch id={m.id} mode={m.audio_mode} current={status.device}
             onSwitched={device => { setStatus(st => st && { ...st, device, warning: null }); setError(null) }} onError={setError} />}
+          {m.live && status?.language && <LanguageSwitch id={m.id} current={status.language}
+            onSwitched={language => setStatus(st => st && { ...st, language })} onError={setError} />}
           {m.live && status && <span className={status.lagS > 10 ? s.badChip : s.neutralChip}>Lag {status.lagS.toFixed(1)} s</span>}
           {m.live
             ? <button className={ui.dark} onClick={stop} disabled={stopping}><span className={s.stopSq} />{stopping ? 'Stopping…' : 'Stop'}</button>
@@ -396,14 +420,14 @@ function LiveMeeting({ id }: { id: number }) {
                 const col = speakerColor(sp.key)
                 const unnamed = sp.personId === null && !sp.isMe
                 return unnamed
-                  ? <button key={sp.clusterId} className={s.nameBtn} onClick={() => setNaming(sp)}>{sp.name} · Name</button>
+                  ? <button key={sp.clusterId} className={s.nameBtn} onClick={() => { setNaming(sp); setNamingLine(null) }}>{sp.name} · Name</button>
                   : <button key={sp.clusterId} className={ui.chip} style={{ background: col.bg, color: col.fg, border: 0, cursor: 'pointer' }}
-                    onClick={() => setNaming(sp)} title={sp.recognised ? 'Recognised by voice: click to confirm or correct' : 'Rename or reassign'}>{sp.name}{sp.recognised && <span className={ui.byVoice}> · by voice</span>}</button>
+                    onClick={() => { setNaming(sp); setNamingLine(null) }} title={sp.recognised ? 'Recognised by voice: click to confirm or correct' : 'Rename or reassign'}>{sp.name}{sp.recognised && <span className={ui.byVoice}> · by voice</span>}</button>
               })}
               {m.live && <span className={ui.muted}>Labels settle as people talk; click to name.</span>}
             </div>
           )}
-          {naming && (
+          {naming && !namingLine && (
             <div className={s.namingWrap}>
               <NameSpeaker speaker={naming} people={people} onClose={() => setNaming(null)}
                 onSaved={() => { setNaming(null); if (!m.live) reload().catch(() => {}) }} />
@@ -428,10 +452,17 @@ function LiveMeeting({ id }: { id: number }) {
                     {timeMode === 'clock' ? seg.clock : fmtElapsed(seg.elapsedS)}
                   </span>
                   {sp
-                    ? <button className={s.whoBtn} style={{ color: speakerColor(sp.key).fg }} onClick={() => setNaming(sp)} title="Name this speaker">{sp.name}</button>
+                    ? <button className={s.whoBtn} style={{ color: speakerColor(sp.key).fg }} title="Who said this line?"
+                      onClick={() => { setNaming(sp); setNamingLine({ id: seg.id, text: seg.text }) }}>{sp.name}</button>
                     : <span className={s.who} style={{ color: speakerColor(seg.key).fg }}>{seg.speaker}</span>}
                   <span className={s.text}>{seg.text}</span>
                 </div>
+                {naming && namingLine?.id === seg.id && (
+                  <div className={s.lineNaming}>
+                    <NameSpeaker key={seg.id} speaker={naming} line={namingLine} people={people} onClose={() => { setNaming(null); setNamingLine(null) }}
+                      onSaved={() => { setNaming(null); setNamingLine(null); if (!m.live) reload().catch(() => {}) }} />
+                  </div>
+                )}
                 </div>
               )
             })}

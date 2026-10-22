@@ -146,6 +146,12 @@ def transcribe(req: Transcribe):
 
 @app.post("/ml/embed", dependencies=[Depends(check_secret)])
 def embed(req: Embed):
+    # During a live meeting the newest lines may not be written yet: use what is, or say so.
+    have = audio.on_disk_s(req.path)
+    ranges = [(s, min(e, have)) for s, e in req.ranges if s < have - 0.5]
+    if not ranges:
+        raise HTTPException(status_code=409, detail="That audio is not on disk yet.")
+    req.ranges = [list(r) for r in ranges]
     end = max(e for _, e in req.ranges)
     start = min(s for s, _ in req.ranges)
     samples = audio.read_span(req.path, start, end)
@@ -156,6 +162,21 @@ def embed(req: Embed):
 @app.post("/ml/live/{session_id}/start", dependencies=[Depends(check_secret)])
 async def live_start(session_id: str, req: LiveStart):
     live.start(session_id, req.language or "en", req.max_segment_s, asyncio.get_running_loop(), req.seeds)
+    return {"ok": True}
+
+
+class LiveLanguage(BaseModel):
+    language: str
+
+
+@app.post("/ml/live/{session_id}/language", dependencies=[Depends(check_secret)])
+def live_language(session_id: str, req: LiveLanguage):
+    """A wrong language noticed mid-meeting: the next sentence uses the new one."""
+    s = live.SESSIONS.get(session_id)
+    if s is None or s.stopped:
+        raise HTTPException(status_code=404, detail="No live session.")
+    s.language = req.language
+    log.info("event=live_language session=%s language=%s", session_id, req.language)
     return {"ok": True}
 
 

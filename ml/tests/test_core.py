@@ -87,13 +87,16 @@ class _Fake(asr.MlxWhisper):
     def __init__(self, results):
         self.results, self.calls = results, []
 
-    def _transcribe(self, samples, language, initial_prompt):
+    def _transcribe(self, samples, language, initial_prompt, **decode):
         self.calls.append(language)
+        return self.results[language]
+
+    def _check(self, samples, language):
         return self.results[language]
 
 
 def test_mixed_language_keeps_confident_english():
-    e = _Fake({"en": [seg(text="so if I speak in English", avg_logprob=-0.3)], "hi": [seg(text="x", avg_logprob=-0.3)]})
+    e = _Fake({"en": [seg(text="so if I speak in English", avg_logprob=-0.2)], "hi": [seg(text="x", avg_logprob=-0.2)]})
     assert e.transcribe(np.zeros(SAMPLE_RATE), "en+hi")[0].text == "so if I speak in English"
     assert e.calls == ["en"]  # confident: Hindi is never tried
 
@@ -104,3 +107,22 @@ def test_mixed_language_switches_to_hindi():
     # Hindi noise words never win, however confident.
     e = _Fake({"en": [seg(text="you", avg_logprob=-0.95)], "hi": [seg(text="झाल झाल", avg_logprob=-0.42)]})
     assert e.transcribe(np.zeros(SAMPLE_RATE), "en+hi")[0].text == "you"
+
+
+def test_mixed_language_hinglish_and_garbage():
+    """Real lines from the 2026-10-20 calls."""
+    def pick(en, en_c, hi, hi_c):
+        return _Fake({"en": [seg(text=en, avg_logprob=en_c)], "hi": [seg(text=hi, avg_logprob=hi_c)]}).transcribe(
+            np.zeros(SAMPLE_RATE), "en+hi")[0].text
+    # Hinglish: English gives a translation it is only fairly sure of; Hindi gets the words right.
+    assert pick("So if English words go transcribe", -0.41, "सिफ इंगलिश वोट्स को ट्रांस्क्राइब", -0.28) == "सिफ इंगलिश वोट्स को ट्रांस्क्राइब"
+    # A Hindi decoding loop scores better than the real English, and still loses.
+    assert pick("Inside the drawer, do you see?", -0.66, "इसी कि इसी कि इसी कि इसी कि इसी कि", -0.20) == "Inside the drawer, do you see?"
+    assert pick("And although", -0.6, "एन एन एन एन एन", -0.19) == "And although"
+    # Muddy audio (a child on a phone): Hindi beats a poor English pass but isn't confident itself.
+    assert pick("The Times of India", -0.9, "अप्रेदे लिए मोलेश पीर", -0.6) == "The Times of India"
+    # Drifting into other scripts is not Hindi.
+    assert pick("If I speak English", -0.55, "Если Вы gram English", -0.3) == "If I speak English"
+    # Hindi mode writing the English it heard: keep the English pass (punctuation, casing).
+    assert pick("Okay, so if I speak in English, things are better.", -0.68, "okay so if I speak in English things are better", -0.5) \
+        == "Okay, so if I speak in English, things are better."

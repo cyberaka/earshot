@@ -66,6 +66,14 @@ public class MeetingController {
 		return meetings.switchDevice(id, req);
 	}
 
+	public record Language(String language) {
+	}
+
+	@PostMapping("/{id}/language")
+	public Map<String, Object> language(@PathVariable long id, @RequestBody Language req) {
+		return meetings.switchLanguage(id, req.language());
+	}
+
 	@PostMapping("/{id}/stop")
 	public Map<String, Object> stop(@PathVariable long id) {
 		return meetings.stop(id);

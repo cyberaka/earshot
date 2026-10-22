@@ -12,6 +12,9 @@ export interface DayView {
   date: string; conversations: ConversationRow[]; ambientCount: number; meetingCount: number; exportPath: string
 }
 
+/** Transcription languages offered everywhere a meeting or import is started. */
+export const LANGUAGES: [string, string][] = [['en+hi', 'English + Hindi'], ['en', 'English'], ['hi', 'Hindi'], ['auto', 'Auto-detect']]
+
 export interface SpeakerView {
   clusterId: number; name: string; personId: number | null; isMe: boolean; key: string; channel: string
   speechS: number; suggestion: string | null; suggestionPersonId: number | null
@@ -158,6 +161,9 @@ export const api = {
   startMeeting: (body: Record<string, unknown>) => send<{ meetingId: number }>('POST', '/api/meetings', body),
   stopMeeting: (id: number) => send('POST', `/api/meetings/${id}/stop`),
   resumeMeeting: (id: number, body: Record<string, unknown>) => send<{ meetingId: number }>('POST', `/api/meetings/${id}/resume`, body),
+  switchMeetingLanguage: (id: number, language: string) => send<{ language: string | null }>('POST', `/api/meetings/${id}/language`, { language }),
+  assignLine: (segmentId: number, body: { personId?: number | null; name?: string; me?: boolean; addToLibrary: boolean }) =>
+    send<{ clusterId: number }>('PATCH', `/api/segments/${segmentId}/speaker`, { personId: null, name: null, me: false, ...body }),
   switchMeetingDevice: (id: number, device: string) => send<{ device: string | null }>('POST', `/api/meetings/${id}/device`, { device }),
   meeting: (id: number) => get<MeetingView>(`/api/meetings/${id}`),
   meetingContext: (file: File) => {

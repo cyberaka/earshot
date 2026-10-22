@@ -19,6 +19,8 @@ import org.springframework.web.multipart.MultipartFile;
 @RequestMapping("/api")
 public class PeopleController {
 
+	private static final java.util.concurrent.ExecutorService VOICES = java.util.concurrent.Executors.newSingleThreadExecutor(
+			Thread.ofVirtual().name("voice-refresh").factory());
 	private final PeopleService people;
 	private final com.earshot.api.meeting.MeetingService meetings;
 
@@ -44,6 +46,29 @@ public class PeopleController {
 		// Naming a speaker during a meeting updates the live view at once.
 		meetings.onSpeakerChanged(id);
 		return Map.of("ok", true);
+	}
+
+	@PatchMapping("/segments/{id}/speaker")
+	public Map<String, Object> assignLine(@PathVariable long id, @RequestBody Assign req) {
+		if (req.personId() == null && !req.me() && (req.name() == null || req.name().isBlank())) {
+			throw new IllegalArgumentException("Give a person or a name.");
+		}
+		long[] moved = people.assignLine(id, req.personId(), req.name(), req.me(), req.addToLibrary());
+		meetings.onLineChanged(id, moved[1]);
+		// Both speakers' voices now come from different lines (the old one may be a remembered voice).
+		// Embedding a few minutes of audio takes seconds: the line moves at once, the voices follow.
+		VOICES.submit(() -> {
+			try {
+				if (moved[0] > 0) {
+					people.refreshVoice(moved[0]);
+				}
+				people.refreshVoice(moved[1]);
+				people.rematch();
+			} catch (Exception e) {
+				org.slf4j.LoggerFactory.getLogger(PeopleController.class).warn("event=voice_refresh_failed segment={} reason={}", id, e.getMessage());
+			}
+		});
+		return Map.of("ok", true, "clusterId", moved[1]);
 	}
 
 	public record Update(String name, List<String> aliases) {

@@ -69,6 +69,10 @@ public class MlClient {
 		return v;
 	}
 
+	public void liveLanguage(String sessionId, String language) {
+		post(ml, "/ml/live/" + sessionId + "/language", Map.of("language", language));
+	}
+
 	public void liveStart(String sessionId, String language, double maxSegmentS, Map<String, ?> seeds) {
 		post(ml, "/ml/live/" + sessionId + "/start", Map.of("language", language, "max_segment_s", maxSegmentS, "seeds", seeds));
 	}

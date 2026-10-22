@@ -91,10 +91,10 @@ public class PeopleService {
 		long target = me ? meId() : personId != null ? personId : personNamed(newName.trim());
 		// The same speaker in every part of a resumed meeting: their first cluster and its continuations.
 		db.sql("""
-				UPDATE speaker_cluster SET person_id = :p, manual = true
+				UPDATE speaker_cluster SET person_id = :p, manual = true, remember = :r
 				WHERE id = :id OR id = (SELECT origin_cluster_id FROM speaker_cluster WHERE id = :id)
 				   OR origin_cluster_id = COALESCE((SELECT origin_cluster_id FROM speaker_cluster WHERE id = :id), :id)""")
-				.param("p", target).param("id", clusterId).update();
+				.param("p", target).param("r", addToLibrary).param("id", clusterId).update();
 		// A correction: the voice saved under the earlier name was never theirs.
 		int removed = db.sql("DELETE FROM voiceprint WHERE cluster_id = :id").param("id", clusterId).update();
 		if (addToLibrary) {
@@ -110,6 +110,121 @@ public class PeopleService {
 			rematch();
 		}
 		reexport("SELECT DISTINCT c.local_date FROM conversation c JOIN speaker_cluster sc ON sc.conversation_id = c.id WHERE sc.id = " + clusterId);
+	}
+
+	/**
+	 * "This line was Rudraansh" (owner request, 2026-10-20): moves one line to a person, leaving the rest
+	 * of its speaker alone. The line is pinned so live regrouping won't move it back. Returns the
+	 * cluster it was moved from and the one it now belongs to.
+	 */
+	@Transactional
+	public long[] assignLine(long segmentId, Long personId, String newName, boolean me, boolean remember) {
+		var seg = db.sql("SELECT conversation_id, channel, speaker_cluster_id FROM segment WHERE id = :id").param("id", segmentId)
+				.query((rs, i) -> new Object[] { rs.getLong(1), rs.getString(2), (Long) rs.getObject(3) }).optional()
+				.orElseThrow(() -> new IllegalArgumentException("No such line."));
+		long conv = (long) seg[0];
+		String channel = (String) seg[1];
+		Long from = (Long) seg[2];
+		long target = me ? meId() : personId != null ? personId : personNamed(newName.trim());
+		// Their lines in this conversation share one speaker: one the user already named, else one for moved lines.
+		long into = db.sql("""
+				SELECT id FROM speaker_cluster WHERE conversation_id = :c AND channel = :ch AND person_id = :p AND manual
+				ORDER BY (label LIKE 'line:%') DESC, id LIMIT 1""").param("c", conv).param("ch", channel).param("p", target)
+				.query(Long.class).optional()
+				.orElseGet(() -> db.sql("""
+						INSERT INTO speaker_cluster (conversation_id, label, channel, person_id, manual) VALUES (:c, :l, :ch, :p, true)
+						RETURNING id""").param("c", conv).param("l", "line:" + target).param("ch", channel).param("p", target)
+						.query(Long.class).single());
+		if (remember) {
+			db.sql("UPDATE speaker_cluster SET remember = true WHERE id = :id").param("id", into).update();
+		}
+		db.sql("UPDATE segment SET speaker_cluster_id = :c, speaker_manual = true WHERE id = :id").param("c", into).param("id", segmentId).update();
+		// A speaker left with no lines is gone, unless the user named it; a moved-lines speaker always goes.
+		if (from != null && from != into) {
+			db.sql("""
+					DELETE FROM speaker_cluster sc WHERE sc.id = :id AND (NOT sc.manual OR sc.label LIKE 'line:%')
+					  AND NOT EXISTS (SELECT 1 FROM segment s WHERE s.speaker_cluster_id = sc.id)""").param("id", from).update();
+		}
+		log.info("event=line_assigned segment={} from={} into={} person={} remember={}", segmentId, from, into, target, remember);
+		reexport("SELECT local_date FROM conversation WHERE id = " + conv);
+		return new long[] { from == null ? -1 : from, into };
+	}
+
+	/**
+	 * Rebuilds a speaker's voice from the lines it has now (after lines moved), and its remembered
+	 * voiceprint with it. A live cluster from the diarizer is left to the diarizer until Stop.
+	 */
+	public void refreshVoice(long clusterId) {
+		var c = db.sql("""
+				SELECT sc.channel, sc.label, sc.person_id, sc.remember, c.stage,
+				       COALESCE(c.capture_files ->> sc.channel, CASE WHEN c.meeting_id IS NOT NULL THEN r.path || '/' || sc.channel || '.flac' END),
+				       r.work_path, c.meeting_id
+				FROM speaker_cluster sc JOIN conversation c ON c.id = sc.conversation_id JOIN recording r ON r.id = c.recording_id
+				WHERE sc.id = :id""").param("id", clusterId)
+				.query((rs, i) -> new Object[] { rs.getString(1), rs.getString(2), (Long) rs.getObject(3), rs.getBoolean(4), rs.getString(5),
+						rs.getString(6), rs.getString(7), rs.getObject(8) })
+				.optional().orElse(null);
+		if (c == null || ("live".equals(c[4]) && !((String) c[1]).startsWith("line:"))) {
+			return;
+		}
+		// Longest lines first, up to two minutes: plenty for a voiceprint, cheap to embed.
+		var lines = db.sql("SELECT start_s, end_s FROM segment WHERE speaker_cluster_id = :id ORDER BY end_s - start_s DESC")
+				.param("id", clusterId).query((rs, i) -> new double[] { rs.getDouble(1), rs.getDouble(2) }).list();
+		var ranges = new java.util.ArrayList<double[]>();
+		double total = 0, speech = 0;
+		for (double[] l : lines) {
+			speech += l[1] - l[0];
+			if (total < 120) {
+				ranges.add(l);
+				total += l[1] - l[0];
+			}
+		}
+		if (ranges.isEmpty()) {
+			return;
+		}
+		ranges.sort((a, b) -> Double.compare(a[0], b[0]));
+		// A meeting's own channel file; while it is still recording, that channel's chunk directory.
+		String path = (String) c[5];
+		if (path == null) {
+			path = (String) c[6];
+		} else if (!Files.exists(Path.of(path))) {
+			path = path.replaceFirst("\\.flac$", "");
+		}
+		if (path == null) {
+			return;
+		}
+		float[] e;
+		try {
+			e = ml.embed(path, ranges);
+		} catch (org.springframework.web.client.RestClientResponseException ex) {
+			log.info("event=voice_refresh_later cluster={} reason={}", clusterId, ex.getStatusCode());
+			return;
+		}
+		db.sql("UPDATE speaker_cluster SET embedding = CAST(:e AS vector), speech_s = :s WHERE id = :id").param("e", Vectors.literal(e))
+				.param("s", speech).param("id", clusterId).update();
+		boolean remembered = (boolean) c[3] || db.sql("SELECT count(*) FROM voiceprint WHERE cluster_id = :id").param("id", clusterId)
+				.query(Long.class).single() > 0;
+		if (remembered && c[2] != null) {
+			db.sql("DELETE FROM voiceprint WHERE cluster_id = :id").param("id", clusterId).update();
+			String source = "system".equals(c[0]) ? "call" : c[7] != null ? "laptop_mic" : "recorder";
+			db.sql("INSERT INTO voiceprint (person_id, embedding, source, cluster_id) VALUES (:p, CAST(:e AS vector), :s, :id)")
+					.param("p", c[2]).param("e", Vectors.literal(e)).param("s", source).param("id", clusterId).update();
+		}
+		log.info("event=voice_refreshed cluster={} lines={} speech_s={} remembered={}", clusterId, ranges.size(), Math.round(speech), remembered);
+	}
+
+	/** At Stop: speakers that gained or lost lines by hand get voices built from their final lines. */
+	public void refreshMovedVoices(long conversationId) {
+		boolean moved = db.sql("SELECT count(*) FROM segment WHERE conversation_id = :c AND speaker_manual").param("c", conversationId)
+				.query(Long.class).single() > 0;
+		if (!moved) {
+			return;
+		}
+		db.sql("""
+				SELECT id FROM speaker_cluster sc WHERE conversation_id = :c
+				  AND (label LIKE 'line:%' OR remember OR EXISTS (SELECT 1 FROM voiceprint v WHERE v.cluster_id = sc.id))""")
+				.param("c", conversationId).query(Long.class).list().forEach(this::refreshVoice);
+		rematch();
 	}
 
 	/** Marks recorder segments as the user: the best Me voiceprint, from the recorder's own mic (PRD §7). */

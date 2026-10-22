@@ -208,6 +208,12 @@ public class PostMeetingJob implements JobWorker.Handler {
 		}
 		indexer.indexConversation(convId);
 		db.sql("UPDATE conversation SET stage = 'exported', status = 'done' WHERE id = :id").param("id", convId).update();
+		try {
+			// Lines moved by hand during the meeting: voices from the final lines, now that the audio is joined.
+			people.refreshMovedVoices(convId);
+		} catch (Exception e) {
+			log.warn("event=voice_refresh_failed conversation={} reason={}", convId, e.getMessage());
+		}
 		db.sql("UPDATE meeting SET status = 'done' WHERE id = :id").param("id", meetingId).update();
 		db.sql("UPDATE recording SET status = 'done' WHERE id = :id").param("id", recId).update();
 		exporter.exportDay(day);

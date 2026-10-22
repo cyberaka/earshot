@@ -110,6 +110,7 @@ function Conversation({ id, onChanged, seek, onSeekDone }: { id: number; onChang
   const [d, setD] = useState<ConversationDetail | null>(null)
   const [people, setPeople] = useState<Person[]>([])
   const [naming, setNaming] = useState<SpeakerView | null>(null)
+  const [namingLine, setNamingLine] = useState<{ id: number; text: string } | null>(null)
   const [markMe, setMarkMe] = useState<Set<number> | null>(null)
   const [highlight, setHighlight] = useState<number | null>(null)
   const [pinTo, setPinTo] = useState<number | null>(null)
@@ -185,13 +186,13 @@ function Conversation({ id, onChanged, seek, onSeekDone }: { id: number; onChang
             const col = speakerColor(sp.key)
             const unnamed = sp.personId === null && !sp.isMe
             return unnamed
-              ? <button key={sp.clusterId} className={s.nameBtn} onClick={() => setNaming(sp)}>{sp.name} · Name this speaker</button>
+              ? <button key={sp.clusterId} className={s.nameBtn} onClick={() => { setNaming(sp); setNamingLine(null) }}>{sp.name} · Name this speaker</button>
               : <button key={sp.clusterId} className={ui.chip} style={{ background: col.bg, color: col.fg, border: 0, cursor: 'pointer' }}
-                onClick={() => setNaming(sp)} title={sp.recognised ? 'Recognised by voice: click to confirm or correct' : 'Rename or reassign'}>{sp.name}{sp.recognised && <span className={ui.byVoice}> · by voice</span>}</button>
+                onClick={() => { setNaming(sp); setNamingLine(null) }} title={sp.recognised ? 'Recognised by voice: click to confirm or correct' : 'Rename or reassign'}>{sp.name}{sp.recognised && <span className={ui.byVoice}> · by voice</span>}</button>
           })}
         </div>
       )}
-      {naming && <NameSpeaker speaker={naming} people={people} onClose={() => setNaming(null)} onSaved={() => { setNaming(null); load(); onChanged() }} />}
+      {naming && !namingLine && <NameSpeaker speaker={naming} people={people} onClose={() => setNaming(null)} onSaved={() => { setNaming(null); load(); onChanged() }} />}
 
       {d.ambient && (
         <div className={ui.notice}>
@@ -235,6 +236,7 @@ function Conversation({ id, onChanged, seek, onSeekDone }: { id: number; onChang
           <audio ref={audio} hidden />
           <div>
             {d.segments.map(seg => {
+              const speakerById = new Map(d.speakers.map(sp => [sp.clusterId, sp]))
               const col = speakerColor(seg.key)
               return (
                 <div key={seg.id}>
@@ -248,11 +250,20 @@ function Conversation({ id, onChanged, seek, onSeekDone }: { id: number; onChang
                   <span className={s.clock} title={timeMode === 'clock' ? `${fmtElapsed(seg.elapsedS)} from the start` : `at ${seg.clock}`}>
                     {timeMode === 'clock' ? seg.clock : fmtElapsed(seg.elapsedS)}
                   </span>
-                  <span className={s.who} style={{ color: col.fg }}>{seg.speaker}</span>
+                  {seg.clusterId !== null && speakerById.get(seg.clusterId) && !markMe
+                    ? <button className={s.whoBtn} style={{ color: col.fg }} title="Who said this line?"
+                      onClick={() => { setNaming(speakerById.get(seg.clusterId!)!); setNamingLine({ id: seg.id, text: seg.text }) }}>{seg.speaker}</button>
+                    : <span className={s.who} style={{ color: col.fg }}>{seg.speaker}</span>}
                   <span className={s.text}>{seg.text}</span>
                   {!markMe && <button className={s.noteBtn} aria-label={`Add a note at ${seg.clock}`} title="Add a note here"
                     onClick={() => setPinTo(pinTo === seg.id ? null : seg.id)}>+ note</button>}
                 </div>
+                {naming && namingLine?.id === seg.id && (
+                  <div className={s.pinned}>
+                    <NameSpeaker key={seg.id} speaker={naming} line={namingLine} people={people} onClose={() => { setNaming(null); setNamingLine(null) }}
+                      onSaved={() => { setNaming(null); setNamingLine(null); load(); onChanged() }} />
+                  </div>
+                )}
                 {(pinned.get(seg.id) ?? []).map(n => <div key={n.id} className={s.pinned}><NoteItem note={n} onChanged={load} /></div>)}
                 {pinTo === seg.id && (
                   <div className={s.pinned}>
@@ -282,33 +293,58 @@ export function ConfirmButton({ label, confirm, onConfirm }: { label: string; co
     : <button className={ui.danger} onClick={() => setArmed(true)}>{label}</button>
 }
 
-export function NameSpeaker({ speaker, people, onClose, onSaved }: { speaker: SpeakerView; people: Person[]; onClose: () => void; onSaved: () => void }) {
+/**
+ * Names a speaker, or with `line`, says who said one line (two similar voices, e.g. siblings on one
+ * phone, can share a speaker). A line of an already-named speaker starts on "this line only".
+ */
+export function NameSpeaker({ speaker, line, people, onClose, onSaved }: {
+  speaker: SpeakerView; line?: { id: number; text: string } | null; people: Person[]; onClose: () => void; onSaved: () => void
+}) {
   const [name, setName] = useState('')
   const [addToLibrary, setAdd] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const named = speaker.personId !== null || speaker.isMe
+  const [scope, setScope] = useState<'line' | 'speaker'>(line && named ? 'line' : 'speaker')
+  const oneLine = scope === 'line' && !!line
   async function save(body: { personId?: number | null; name?: string; me?: boolean }) {
     setBusy(true)
-    try { await api.assignCluster(speaker.clusterId, { ...body, addToLibrary }); onSaved() } catch (e) { setError(String(e)); setBusy(false) }
+    try {
+      if (oneLine) await api.assignLine(line!.id, { ...body, addToLibrary })
+      else await api.assignCluster(speaker.clusterId, { ...body, addToLibrary })
+      onSaved()
+    } catch (e) { setError(String(e)); setBusy(false) }
   }
-  const others = people.filter(p => !p.is_me)
+  // Moving a line to the speaker it already has changes nothing.
+  const others = people.filter(p => !p.is_me && !(speaker.personId === p.id && (oneLine || speaker.recognised)))
   return (
-    <div className={s.namePanel} role="group" aria-label={`Name ${speaker.name}`}>
+    <div className={s.namePanel} role="group" aria-label={oneLine ? 'Who said this line' : `Name ${speaker.name}`}>
       <div className={s.namePanelHead}>
-        <b>{speaker.recognised ? `Is this ${speaker.name}?` : `Who is ${speaker.name}?`}</b>
-        <span className={ui.muted}>{Math.round(speaker.speechS)} s of speech{speaker.recognised && speaker.matchScore !== null ? ` · recognised by voice (${speaker.matchScore.toFixed(2)})` : ''}</span>
+        <b>{oneLine ? 'Who said this line?' : speaker.recognised ? `Is this ${speaker.name}?` : `Who is ${speaker.name}?`}</b>
+        <span className={ui.muted}>{oneLine
+          ? `now ${speaker.name}`
+          : `${Math.round(speaker.speechS)} s of speech${speaker.recognised && speaker.matchScore !== null ? ` · recognised by voice (${speaker.matchScore.toFixed(2)})` : ''}`}</span>
       </div>
+      {line && (
+        <>
+          <div className={s.nameQuote}>“{line.text}”</div>
+          <div className={s.nameRow} role="radiogroup" aria-label="What to change">
+            <label className={s.check}><input type="radio" checked={scope === 'line'} onChange={() => setScope('line')} /> This line only</label>
+            <label className={s.check}><input type="radio" checked={scope === 'speaker'} onChange={() => setScope('speaker')} /> Every line of {speaker.name}</label>
+          </div>
+        </>
+      )}
       <div className={s.nameRow}>
-        {speaker.recognised && speaker.personId !== null && (
-          <button className={ui.btnSmall} disabled={busy} onClick={() => save({ personId: speaker.personId })}>Yes, it's {speaker.name}</button>
-        )}
-        {speaker.suggestion && speaker.suggestionPersonId && (
+        {!oneLine && speaker.suggestion && speaker.suggestionPersonId && (
           <button className={ui.btnSmall} disabled={busy} onClick={() => save(people.find(p => p.id === speaker.suggestionPersonId)?.is_me ? { me: true } : { personId: speaker.suggestionPersonId })}>
             Sounds like {speaker.suggestion}
           </button>
         )}
-        <button className={ui.btnSmall} disabled={busy} onClick={() => save({ me: true })}>This is me</button>
-        {others.filter(p => !(speaker.recognised && p.id === speaker.personId)).slice(0, 8).map(p => <button key={p.id} className={ui.btnSmall} disabled={busy} onClick={() => save({ personId: p.id })}>{p.name}</button>)}
+        {!oneLine && speaker.recognised && speaker.personId !== null && (
+          <button className={ui.btnSmall} disabled={busy} onClick={() => save({ personId: speaker.personId })}>Yes, it's {speaker.name}</button>
+        )}
+        {!(oneLine && speaker.isMe) && <button className={ui.btnSmall} disabled={busy} onClick={() => save({ me: true })}>This is me</button>}
+        {others.slice(0, 8).map(p => <button key={p.id} className={ui.btnSmall} disabled={busy} onClick={() => save({ personId: p.id })}>{p.name}</button>)}
       </div>
       <form className={s.nameRow} onSubmit={e => { e.preventDefault(); if (name.trim()) save({ name: name.trim() }) }}>
         <label className="sr-only" htmlFor="new-name">New name</label>

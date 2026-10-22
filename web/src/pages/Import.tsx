@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type DragEvent } from 'react'
 import { Link } from 'react-router-dom'
-import { api, type Health, type Job } from '../api'
+import { api, LANGUAGES, type Health, type Job } from '../api'
 import { useHealth } from '../components/Shell'
 import ui from '../components/ui.module.css'
 import s from './Import.module.css'
@@ -105,7 +105,7 @@ export default function Import() {
           </label>
           <label className={ui.field}>Language
             <select className={ui.input} value={language} onChange={e => setLanguage(e.target.value)}>
-              <option value="en+hi">English + Hindi</option><option value="en">English</option><option value="hi">Hindi</option><option value="auto">Auto</option>
+              {LANGUAGES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
             </select>
           </label>
           <button className={ui.primary} disabled={!pending || pending.rows.length === 0} onClick={process}>Process</button>

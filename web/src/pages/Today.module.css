@@ -111,3 +111,6 @@
 }
 
 .meetingLinks { margin-left: auto; display: flex; gap: 8px; }
+.whoBtn { composes: who; border: 0; background: none; text-align: left; font: inherit; font-weight: 600; cursor: pointer; }
+.whoBtn:hover { text-decoration: underline; }
+.nameQuote { font-size: 14px; color: var(--ink-2); font-style: italic; overflow-wrap: anywhere; }

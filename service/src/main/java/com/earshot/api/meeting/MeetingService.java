@@ -97,6 +97,7 @@ public class MeetingService {
 		volatile double rtf;
 		volatile String warning;
 		volatile String device;
+		volatile String language;
 		volatile WebSocket ml;
 		// Live speaker labels ("mic:L1") -> speaker_cluster ids, and ML segment keys -> segment ids.
 		final java.util.concurrent.ConcurrentHashMap<String, Long> clusters = new java.util.concurrent.ConcurrentHashMap<>();
@@ -138,6 +139,24 @@ public class MeetingService {
 		l.device = ml.captureSwitch("m" + meetingId, body);
 		l.warning = null; // the leak check starts over on the new device
 		log.info("event=meeting_device_switched meeting={} device={}", meetingId, l.device);
+		var st = status(l);
+		sockets.broadcast(meetingId, st);
+		return st;
+	}
+
+	/** A wrong language noticed mid-meeting: the next sentence is transcribed in the new one. */
+	public Map<String, Object> switchLanguage(long meetingId, String language) {
+		var l = live;
+		if (l == null || l.meetingId != meetingId) {
+			throw new IllegalStateException("Meeting " + meetingId + " is not live.");
+		}
+		if (language == null || !language.matches("[a-z]{2}(\\+[a-z]{2})*|auto")) {
+			throw new IllegalArgumentException("Unknown language: " + language);
+		}
+		ml.liveLanguage("m" + meetingId, language);
+		l.language = language;
+		db.sql("UPDATE recording SET language = :l WHERE id = :id").param("l", language).param("id", l.recordingId).update();
+		log.info("event=meeting_language_switched meeting={} language={}", meetingId, language);
 		var st = status(l);
 		sockets.broadcast(meetingId, st);
 		return st;
@@ -229,6 +248,7 @@ public class MeetingService {
 		Files.createDirectories(dir);
 		db.sql("UPDATE recording SET path = :p WHERE id = :id").param("p", dir.toString()).param("id", recId).update();
 		var l = new Live(meetingId, recId, convId, mode, now);
+		l.language = lang;
 		live = l;
 		try {
 			String session = "m" + meetingId;
@@ -363,7 +383,11 @@ public class MeetingService {
 						continue;
 					}
 					long clusterId = cluster(l, channel, c.get("speaker").asString());
-					db.sql("UPDATE segment SET speaker_cluster_id = :c WHERE id = :id").param("c", clusterId).param("id", segId).update();
+					// A line the user moved by hand stays where they put it.
+					if (db.sql("UPDATE segment SET speaker_cluster_id = :c WHERE id = :id AND NOT speaker_manual").param("c", clusterId)
+							.param("id", segId).update() == 0) {
+						continue;
+					}
 					changes.add(Map.of("segmentId", segId, "clusterId", clusterId));
 				}
 				// Labels regrouping emptied are gone, unless the user named them.
@@ -424,6 +448,17 @@ public class MeetingService {
 		broadcastSpeakers(l);
 	}
 
+	/** After the user moves one line during a meeting: show it under its new speaker at once. */
+	public void onLineChanged(long segmentId, long clusterId) {
+		var l = live;
+		if (l == null || db.sql("SELECT count(*) FROM segment WHERE id = :id AND conversation_id = :c").param("id", segmentId)
+				.param("c", l.conversationId).query(Long.class).single() == 0) {
+			return;
+		}
+		sockets.broadcast(l.meetingId, Map.of("type", "relabel", "changes", List.of(Map.of("segmentId", segmentId, "clusterId", clusterId))));
+		broadcastSpeakers(l);
+	}
+
 	private Map<String, Object> status(Live l) {
 		var m = new HashMap<String, Object>();
 		m.put("type", "status");
@@ -433,6 +468,7 @@ public class MeetingService {
 		m.put("elapsedS", Duration.between(l.startedAt, Instant.now()).toSeconds());
 		m.put("warning", l.warning);
 		m.put("device", l.device);
+		m.put("language", l.language);
 		return m;
 	}
 
