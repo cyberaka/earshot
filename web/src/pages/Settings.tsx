@@ -17,9 +17,9 @@ const GROUPS: { title: string; keys: string[] }[] = [
  * Choosing a provider only shows the button: nothing runs until the user clicks it (owner rule, 2026-10-24).
  */
 const FEATURES: { key: InsightFeature; label: string; hint: string; providers: Provider[] }[] = [
-  { key: 'live_summary', label: 'Summary during a meeting', hint: 'A Summarize button on the live meeting: summary, topics and decisions so far. Cloud only: a local model would slow live transcription.', providers: ['off', 'openai', 'anthropic'] },
+  { key: 'live_summary', label: 'Summary during a meeting', hint: 'A Summarize button on the live meeting: summary, topics and decisions so far. The local model shares the GPU with live transcription: fine on a 32 GB Mac, may slow the live transcript on 16 GB.', providers: ['off', 'local', 'openai', 'anthropic'] },
   { key: 'meeting_summary', label: 'Summary after a meeting', hint: 'A Summarize button on finished meetings and daily-notes conversations: summary and action items.', providers: ['off', 'local', 'openai', 'anthropic'] },
-  { key: 'ask', label: 'Ask', hint: 'One answer per question you type, about a meeting, a day or a date range. A local model answers only when no meeting is live.', providers: ['off', 'local', 'openai', 'anthropic'] },
+  { key: 'ask', label: 'Ask', hint: 'One answer per question you type, about a meeting, a day or a date range. During a meeting, a local model shares the GPU with transcription.', providers: ['off', 'local', 'openai', 'anthropic'] },
   { key: 'semantic_search', label: 'Search by meaning', hint: 'A "by meaning" tick box on Search, and a button that prepares new lines for it. Keyword search always works without it.', providers: ['off', 'local', 'openai'] },
 ]
 const INSIGHT_KEYS = ['insights_model_local', 'insights_model_openai', 'insights_model_anthropic', 'insights_embedding_local', 'insights_embedding_openai',

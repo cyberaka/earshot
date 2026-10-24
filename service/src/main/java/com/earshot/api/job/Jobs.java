@@ -37,6 +37,17 @@ public class Jobs {
 				.optional();
 	}
 
+	/** While a meeting is live, only work the user clicked for during it. */
+	public Optional<Job> claimClickedDuringLive() {
+		return db.sql("""
+				UPDATE job SET status = 'running', attempts = attempts + 1, updated_at = now()
+				WHERE id = (SELECT id FROM job WHERE status = 'queued' AND type LIKE '%\\_now' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
+				RETURNING id, type, recording_id, conversation_id, meeting_id, attempts""")
+				.query((rs, i) -> new Job(rs.getLong(1), rs.getString(2), (Long) rs.getObject(3), (Long) rs.getObject(4),
+						(Long) rs.getObject(5), rs.getInt(6)))
+				.optional();
+	}
+
 	public void finish(long id) {
 		db.sql("UPDATE job SET status = 'done', error = NULL, updated_at = now() WHERE id = :id").param("id", id).update();
 	}

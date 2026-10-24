@@ -492,7 +492,7 @@ public class MeetingService {
 		m.put("mlMemoryMb", l.mlMemoryMb);
 		m.put("behind", behind(l));
 		m.put("transcriptFile", transcript.dir().resolve("current.md").toString());
-		m.put("summaryWith", insights.usableNow(Feature.LIVE_SUMMARY) ? insights.provider(Feature.LIVE_SUMMARY).id() : null);
+		m.put("summaryWith", insights.enabled(Feature.LIVE_SUMMARY) ? insights.provider(Feature.LIVE_SUMMARY).id() : null);
 		m.put("elapsedS", Duration.between(l.startedAt, Instant.now()).toSeconds());
 		m.put("warning", l.warning);
 		m.put("device", l.device);
@@ -583,19 +583,21 @@ public class MeetingService {
 		if (parts.isEmpty()) {
 			throw new IllegalArgumentException("This meeting has no saved audio to re-transcribe.");
 		}
+		// Clicked during another live meeting: it runs now, alongside that meeting (the user's call); otherwise it gives way to meetings.
+		boolean duringLive = l != null;
 		double seconds = 0;
 		for (Object[] p : parts) {
 			long conv = (Long) p[0];
 			db.sql("UPDATE segment SET live = true WHERE conversation_id = :c").param("c", conv).update();
 			db.sql("UPDATE conversation SET stage = :s, status = 'queued' WHERE id = :c").param("s", PostMeetingJob.RETRANSCRIBING)
 					.param("c", conv).update();
-			jobs.enqueue("post_meeting_full", (Long) p[1], conv, meetingId);
+			jobs.enqueue(duringLive ? "post_meeting_full_now" : "post_meeting_full", (Long) p[1], conv, meetingId);
 			seconds += (Double) p[2];
 		}
 		db.sql("UPDATE meeting SET status = 'processing' WHERE id = :id").param("id", meetingId).update();
 		worker.wake();
-		log.info("event=retranscribe_queued meeting={} parts={} audio_s={}", meetingId, parts.size(), Math.round(seconds));
-		return Map.of("queued", parts.size(), "audioS", seconds);
+		log.info("event=retranscribe_queued meeting={} parts={} audio_s={} during_live={}", meetingId, parts.size(), Math.round(seconds), duringLive);
+		return Map.of("queued", parts.size(), "audioS", seconds, "duringLive", duringLive);
 	}
 
 	// A local model's context; a cloud model reads the whole meeting in one request.
@@ -611,7 +613,8 @@ public class MeetingService {
 	public Map<String, Object> summarize(long meetingId) {
 		var l = live;
 		boolean isLive = l != null && l.meetingId == meetingId;
-		Feature f = isLive ? Feature.LIVE_SUMMARY : Feature.MEETING_SUMMARY;
+		// Live: the "during a meeting" provider if chosen, else the "after" one (the user clicked, so it runs).
+		Feature f = isLive && insights.enabled(Feature.LIVE_SUMMARY) ? Feature.LIVE_SUMMARY : Feature.MEETING_SUMMARY;
 		ChatClient llm = insights.client(f);
 		String model = insights.model(f);
 		boolean cloud = insights.provider(f).cloud();

@@ -278,7 +278,9 @@ function finishingLabel(stage?: string | null) {
  * A full pass from the saved audio, only when the user clicks (owner rule, 2026-10-24). Two steps,
  * because it replaces the transcript: lines moved by hand are redone, names carry over by voice.
  */
-function Retranscribe({ id, minutes, onQueued, onError }: { id: number; minutes: number; onQueued: () => void; onError: (e: string) => void }) {
+function Retranscribe({ id, minutes, otherLive, onQueued, onError }: {
+  id: number; minutes: number; otherLive: boolean; onQueued: () => void; onError: (e: string) => void
+}) {
   const [armed, setArmed] = useState(false)
   const [busy, setBusy] = useState(false)
   if (!armed) return <button type="button" className={ui.btnSmall} onClick={() => setArmed(true)}
@@ -286,7 +288,10 @@ function Retranscribe({ id, minutes, onQueued, onError }: { id: number; minutes:
   return (
     <div className={ui.notice} role="dialog" aria-label="Re-transcribe this meeting" style={{ flexBasis: '100%' }}>
       <b>Re-transcribe from the saved audio?</b> A fuller pass: speakers and words over whole files, with more context than live.
-      It uses the CPU and GPU for roughly {Math.max(1, Math.round(minutes / 2))} min. If you start a meeting, it stops at once and carries on after that meeting.
+      It uses the CPU and GPU for roughly {Math.max(1, Math.round(minutes / 2))} min.{' '}
+      {otherLive
+        ? <b style={{ color: 'var(--warn)' }}>A meeting is live now: this starts at once and shares the GPU with it, which may slow its live transcript.</b>
+        : 'If you start a meeting, it stops at once and carries on after that meeting.'}
       Your current transcript stays until the new one is ready, then is replaced: speaker names carry over by voice, lines you moved by hand are redone.{' '}
       <button type="button" className={ui.primary} disabled={busy} onClick={async () => {
         setBusy(true)
@@ -516,7 +521,8 @@ function LiveMeeting({ id }: { id: number }) {
             : m.status === 'done' && <>
               <Link className={ui.btn} to={`/day/${m.parts[m.parts.length - 1]?.local_date ?? localDate(m.started_at)}/${m.conversation_id}`}>Open in daily notes</Link>
               <Link className={ui.live} to={`/meeting?resume=${m.id}`}><span className={s.whiteDot} />Resume</Link>
-              <Retranscribe id={m.id} minutes={m.parts.reduce((t, p) => t + p.duration_s, 0) / 60} onQueued={reloadQuietly} onError={setError} />
+              <Retranscribe id={m.id} minutes={m.parts.reduce((t, p) => t + p.duration_s, 0) / 60} otherLive={health?.activeMeetingId != null}
+                onQueued={reloadQuietly} onError={setError} />
             </>}
         </div>
       </header>
@@ -613,9 +619,8 @@ function LiveMeeting({ id }: { id: number }) {
                 {new Date(summary.updatedAt).toLocaleTimeString()}{summary.lines ? ` · ${summary.lines} lines` : ''}
               </span>}
             </div>
-            <SummarizeButton provider={m.live ? (duringWith !== 'off' ? duringWith : afterWith) : afterWith} estimate={estimateSummary}
-              again={!!summary} onRun={() => api.summarizeMeeting(id).then(setSummary)}
-              held={m.live && duringWith === 'off' && afterWith === 'local' ? 'The summary uses the local model: click Summarize after Stop, so transcription keeps the GPU.' : null} />
+            <SummarizeButton provider={m.live && duringWith !== 'off' ? duringWith : afterWith} estimate={estimateSummary}
+              again={!!summary} onRun={() => api.summarizeMeeting(id).then(setSummary)} liveNow={health?.activeMeetingId != null} />
             {summary && (
               <>
                 <ul className={s.bullets}>{summary.summary.map((b, i) => <li key={i}>{b}</li>)}</ul>
@@ -662,7 +667,7 @@ function LiveMeeting({ id }: { id: number }) {
 
           {askWith !== 'off' && <section className={ui.card}>
             <h2 className={s.h2}>Ask</h2>
-            {askWith === 'local' && m.live && <span className={ui.muted}>Ask uses the local model, which waits until you stop so transcription keeps the GPU.</span>}
+            {askWith === 'local' && health?.activeMeetingId != null && <span className={ui.muted} style={{ color: 'var(--warn)' }}>A meeting is live: the local model will share the GPU with transcription and may slow the live transcript.</span>}
             <form className={s.discussed} onSubmit={e => { e.preventDefault(); if (discussed.trim() && !busy) { run(discussed.trim(), 'was_discussed', `Was ${discussed.trim()} discussed?`); setDiscussed('') } }}>
               <label htmlFor="discussed" className="sr-only">Was X discussed?</label>
               <span className={ui.muted}>Was</span>

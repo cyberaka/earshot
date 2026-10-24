@@ -2,7 +2,7 @@
 
 **Working name:** Earshot
 **Owner:** Abhinav
-**Status:** Draft v7 (r15, 2026-10-24: Re-transcribe button, batch work yields to live meetings; r14: AI insights run only on the user's click; r13: transcription first, AI insights optional)
+**Status:** Draft v7 (r16, 2026-10-24: a click is honoured during a live meeting too; r15: Re-transcribe button, batch work yields to live meetings; r14: AI insights run only on the user's click; r13: transcription first, AI insights optional)
 **Date:** 2026-10-19, revised 2026-10-24
 **Build approach:** Implemented with Claude Code, milestone by milestone (see §12). Significant design decisions get a numbered ADR in `docs/adr/` before they are built.
 
@@ -215,7 +215,7 @@ Only for Summarize and Ask clicks (§6.8). Nothing here calls a model on its own
 A full re-run (re-transcribe and re-diarize each channel, as Mode A steps 6–11) remains available as an explicit job (`post_meeting_full`) and is never started automatically.
 
 **Re-transcribe (owner request, 2026-10-24):** a finished meeting has a **Re-transcribe** button: a fuller pass from the saved audio (diarization and Whisper over whole files, with more context than live). Only on the user's click, right after the meeting or at the end of the day; never automatic.
-- It is a batch job: it waits while a meeting is live, and stops within seconds when one starts (the speech engine checks before every ~30 s chunk and hands the GPU back). It carries on after that meeting's Stop. Measured: 3.8 s from the next meeting's start to the GPU being free.
+- Clicked while another meeting is live, it starts at once and shares the GPU with that meeting (the confirm says so; measured: a 2-min meeting re-done in 18 s, live lag 2.5 s). Otherwise it is a batch job: it waits while a meeting is live, and stops within seconds when one starts (the speech engine checks before every ~30 s chunk and hands the GPU back). It carries on after that meeting's Stop. Measured: 3.8 s from the next meeting's start to the GPU being free.
 - The current transcript stays visible until the new one replaces it. Speaker names carry over by voice (library voices, and names given in this meeting at similarity ≥ 0.5); lines moved by hand are redone. Notes, screenshots and any summary stay.
 - The button says what it costs (roughly half the meeting's length of CPU and GPU) and asks once more before it starts.
 
@@ -259,7 +259,7 @@ Earshot's core is transcription and diarization; it must work fully with every i
 
 | Insight | Runs when the user clicks | Providers |
 |---|---|---|
-| Summary during a meeting | Summarize on the live meeting: summary, topics, decisions, agenda so far (§6.5) | Off · OpenAI · Anthropic (never local: it would share the GPU with live transcription) |
+| Summary during a meeting | Summarize on the live meeting: summary, topics, decisions, agenda so far (§6.5) | Off · Local · OpenAI · Anthropic |
 | Summary after a meeting | Summarize on a finished meeting or a daily-notes conversation: summary, topics, action items (§5.2 step 10) | Off · Local · OpenAI · Anthropic |
 | Ask | Each question or quick action: one answer (§6.1, A-9) | Off · Local · OpenAI · Anthropic |
 | Search by meaning | "Prepare … for meaning search" embeds new lines; the "by meaning" tick adds one call per search (§5.6) | Off · Local · OpenAI (Anthropic has no embeddings) |
@@ -267,7 +267,7 @@ Earshot's core is transcription and diarization; it must work fully with every i
 - **Click only (owner rule D-10, 2026-10-24):** no insight ever runs on its own: no timer, no loop, nothing after Stop or an import. A local call costs GPU time, a cloud call costs money, so every call is the user's click. Choosing a provider in Settings only shows the buttons. Before a click, the button shows what it would send (lines, about how many tokens, to which provider).
 - **One click, one request** to a cloud provider: the whole transcript goes in one request (up to ~100k tokens), not in pieces. A local model, with a smaller context, condenses long transcripts in parts.
 - **Providers:** local = an OpenAI-compatible server (LM Studio, Ollama); OpenAI and Anthropic through their APIs. Model names are settings per provider.
-- **A local model never competes with live transcription (D-2):** while a meeting is live, a click that would use the local model is refused with a reason ("after Stop"). Cloud providers use no local GPU and may run live.
+- **A click is always honoured, during a meeting too (owner, 2026-10-24, D-12; replaces D-2's refusal):** "the user knows why", e.g. a 32 GB Mac has room. The button warns when the local model would share the GPU with live transcription, and the log records `event=local_model_during_live reason=user_click`. Earshot itself never starts anything during a meeting.
 - **One request at a time per provider.** None blocks a transcription thread.
 - **A provider failure never touches the transcript:** the click shows the provider's error; meetings, imports and exports never depend on a model.
 - **Privacy:** with a cloud provider on, transcript text (never audio) goes to that company. Settings says so next to each such insight, and the header shows "Insights: OpenAI" (or Anthropic) while any is on.

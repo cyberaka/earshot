@@ -23,7 +23,9 @@ import tools.jackson.databind.json.JsonMapper;
  * diarization; summaries, Q&A and semantic search are extras, each off unless the user picks a
  * provider for it: a local server, OpenAI or Anthropic. Each runs only when the user clicks its
  * button, never on a timer or after a job (owner rule, 2026-10-24): a local call costs GPU, a cloud
- * call costs money. A local model shares the GPU with Whisper, so it never runs while a meeting is live.
+ * call costs money. During a live meeting a click is still honoured (owner, 2026-10-24: "the user
+ * knows why"; a 32 GB Mac has room): a local model then shares the GPU with Whisper, which the UI
+ * warns about and the log records.
  */
 @Service
 public class Insights {
@@ -70,14 +72,6 @@ public class Insights {
 		}
 	}
 
-	/** A local model was asked for during a live meeting. */
-	public static class HeldForLive extends RuntimeException {
-		public HeldForLive(Feature f) {
-			super(f.label() + " uses the local model, which waits until the meeting stops so transcription keeps the GPU. "
-					+ "Ask again after Stop, or choose a cloud provider in Settings → Insights.");
-		}
-	}
-
 	private final Settings settings;
 	private final LlmClient local;
 	private final LlmClient openai;
@@ -116,20 +110,14 @@ public class Insights {
 		return provider(f) != Provider.OFF;
 	}
 
-	/** On, and allowed right now: a local model waits while a meeting is live. */
-	public boolean usableNow(Feature f) {
-		Provider p = provider(f);
-		return p != Provider.OFF && !(p == Provider.LOCAL && liveMeeting.getAsBoolean());
-	}
-
-	/** The client for a feature, or why it can't be used now. */
+	/** The client for a feature the user just clicked, or {@link Off}. */
 	public ChatClient client(Feature f) {
 		Provider p = provider(f);
 		if (p == Provider.OFF) {
 			throw new Off(f);
 		}
 		if (p == Provider.LOCAL && liveMeeting.getAsBoolean()) {
-			throw new HeldForLive(f);
+			log.warn("event=local_model_during_live feature={} reason=user_click", f.key);
 		}
 		return clientFor(p);
 	}
@@ -149,7 +137,7 @@ public class Insights {
 		return f == Feature.SEMANTIC_SEARCH ? settings.str("insights_embedding_" + p.id()) : settings.str("insights_model_" + p.id());
 	}
 
-	/** Rejects choices that can't work: local for the live summary, Anthropic for embeddings. */
+	/** Rejects choices that can't work: Anthropic for embeddings. */
 	public static void validate(String key, Object value) {
 		for (Feature f : Feature.values()) {
 			if (!f.settingKey().equals(key)) {
@@ -160,9 +148,6 @@ public class Insights {
 				p = Provider.valueOf(String.valueOf(value).trim().toUpperCase(Locale.ROOT));
 			} catch (IllegalArgumentException e) {
 				throw new IllegalArgumentException(f.label() + ": choose off, local, openai or anthropic.");
-			}
-			if (f == Feature.LIVE_SUMMARY && p == Provider.LOCAL) {
-				throw new IllegalArgumentException("A summary during a meeting can't use the local model: it would compete with live transcription for the GPU.");
 			}
 			if (f == Feature.SEMANTIC_SEARCH && p == Provider.ANTHROPIC) {
 				throw new IllegalArgumentException("Anthropic has no embeddings API: choose local or openai for semantic search.");

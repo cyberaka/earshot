@@ -112,16 +112,19 @@ def prepare(req: Prepare):
 YIELDED = "paused: a live meeting is being transcribed"
 
 
-def yield_to_live() -> None:
-    """Batch work stops when a meeting goes live; the service puts the job back and resumes it after Stop."""
+def yield_to_live(clicked_during_live: str | None = None) -> None:
+    """Batch work stops when a meeting goes live; the service puts the job back and resumes it after Stop.
+    Work the user clicked for during the meeting runs anyway (owner, 2026-10-24: "the user knows why")."""
+    if clicked_during_live == "1":
+        return
     if live.active():
         log.info("event=batch_yielded_to_live")
         raise HTTPException(status_code=409, detail=YIELDED)
 
 
 @app.post("/ml/diarize", dependencies=[Depends(check_secret)])
-def diarize(req: Diarize):
-    yield_to_live()
+def diarize(req: Diarize, x_earshot_clicked_during_live: str | None = Header(default=None)):
+    yield_to_live(x_earshot_clicked_during_live)
     t = time.monotonic()
     samples = audio.read_span(req.path, req.start_s, req.end_s)
     regions = req.regions or [[req.start_s, req.end_s or req.start_s + len(samples) / 16000]]
@@ -156,7 +159,7 @@ def speech_chunks(regions: list[list[float]], start: float, end: float, max_s: f
 
 
 @app.post("/ml/transcribe", dependencies=[Depends(check_secret)])
-def transcribe(req: Transcribe):
+def transcribe(req: Transcribe, x_earshot_clicked_during_live: str | None = Header(default=None)):
     t = time.monotonic()
     end = req.end_s if req.end_s is not None else req.start_s + audio.read_span(req.path, req.start_s).shape[0] / 16000
     filters = asr.Filters(req.no_speech_prob, req.avg_logprob, req.compression_ratio, req.min_speech_fraction)
@@ -164,7 +167,7 @@ def transcribe(req: Transcribe):
     out, dropped, previous = [], 0, None
     vocab = asr.vocabulary_prompt(req.vocabulary)
     for cs, ce in chunks:
-        yield_to_live()  # checked per ~30 s chunk, so a meeting that starts gets the GPU within seconds
+        yield_to_live(x_earshot_clicked_during_live)  # checked per ~30 s chunk, so a meeting that starts gets the GPU within seconds
         samples = audio.read_span(req.path, cs, ce)
         prompt = " ".join(p for p in (vocab, previous) if p) or None
         for seg in asr.engine().transcribe(samples, req.language, initial_prompt=prompt):

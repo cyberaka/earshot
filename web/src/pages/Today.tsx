@@ -22,7 +22,9 @@ function longDate(date: string) {
 
 export default function Today() {
   // Ask is an optional AI feature (Settings → Insights); without it the day is transcript and notes.
-  const features = useHealth(30_000)?.insights?.features
+  const health = useHealth(30_000)
+  const features = health?.insights?.features
+  const liveNow = health?.activeMeetingId != null
   const askOn = (features?.ask ?? 'off') !== 'off'
   const summaryWith = features?.meeting_summary ?? 'off'
   const params = useParams()
@@ -106,15 +108,15 @@ export default function Today() {
               )
             })}
           </section>
-          {current && <Conversation summaryWith={summaryWith} key={current} id={current} onChanged={load} seek={pendingSeek?.id === current ? pendingSeek.startS : null} onSeekDone={() => setPendingSeek(null)} />}
+          {current && <Conversation summaryWith={summaryWith} liveNow={liveNow} key={current} id={current} onChanged={load} seek={pendingSeek?.id === current ? pendingSeek.startS : null} onSeekDone={() => setPendingSeek(null)} />}
         </div>
       )}
     </>
   )
 }
 
-function Conversation({ id, onChanged, seek, onSeekDone, summaryWith }: {
-  id: number; onChanged: () => void; seek: number | null; onSeekDone: () => void; summaryWith: Provider
+function Conversation({ id, onChanged, seek, onSeekDone, summaryWith, liveNow }: {
+  id: number; onChanged: () => void; seek: number | null; onSeekDone: () => void; summaryWith: Provider; liveNow: boolean
 }) {
   const [d, setD] = useState<ConversationDetail | null>(null)
   const [people, setPeople] = useState<Person[]>([])
@@ -212,7 +214,7 @@ function Conversation({ id, onChanged, seek, onSeekDone, summaryWith }: {
       )}
 
       {summaryWith !== 'off' && d.segments.length > 0 && (
-        <SummarizeButton provider={summaryWith} estimate={estimateSummary} again={d.summary.length > 0}
+        <SummarizeButton provider={summaryWith} estimate={estimateSummary} again={d.summary.length > 0} liveNow={liveNow}
           onRun={() => api.summarizeConversation(d.id).then(() => { load(); onChanged() })} />
       )}
 

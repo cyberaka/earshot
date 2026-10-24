@@ -211,6 +211,7 @@ def test_batch_work_yields_to_a_live_meeting(monkeypatch):
     with pytest.raises(HTTPException) as e:
         app.yield_to_live()
     assert e.value.status_code == 409 and "live meeting" in e.value.detail
+    app.yield_to_live("1")  # the user clicked for this during the meeting: it runs anyway
     live.SESSIONS["m1"].stopped = True  # Stop: the next meeting's catch-up and re-runs may continue
     assert not live.active()
     app.yield_to_live()

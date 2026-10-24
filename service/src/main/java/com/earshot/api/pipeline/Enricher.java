@@ -52,7 +52,7 @@ public class Enricher {
 
 	/**
 	 * One click, one summary: throws {@link Insights.Off} when no provider is chosen and
-	 * {@link Insights.HeldForLive} for the local model during a meeting, so the click says why.
+	 * the provider's own error otherwise, so the click says why.
 	 */
 	@Transactional
 	public void summarize(long conversationId) {

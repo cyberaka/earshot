@@ -44,7 +44,12 @@ public class MlClient {
 
 	private JsonNode post(RestClient client, String path, Object body) {
 		try {
-			return client.post().uri(path).body(body).retrieve().body(JsonNode.class);
+			var req = client.post().uri(path).body(body);
+			if (com.earshot.api.job.JobWorker.clickedDuringLive()) {
+				// The user started this during the meeting on purpose: the speech engine does not hold it back.
+				req = req.header("X-Earshot-Clicked-During-Live", "1");
+			}
+			return req.retrieve().body(JsonNode.class);
 		} catch (org.springframework.web.client.HttpClientErrorException.Conflict e) {
 			// The speech engine gave the GPU to a meeting that just went live: the job waits and resumes after Stop.
 			if (e.getResponseBodyAsString().contains("paused: a live meeting")) {

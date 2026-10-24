@@ -56,7 +56,7 @@ public class AskController {
 			} catch (LlmClient.LlmUnavailable e) {
 				send(emitter, "error", Map.of("message", "The AI provider is unavailable: " + e.getMessage()));
 				emitter.complete();
-			} catch (Insights.Off | Insights.HeldForLive e) {
+			} catch (Insights.Off e) {
 				send(emitter, "error", Map.of("message", e.getMessage()));
 				emitter.complete();
 			} catch (Exception e) {

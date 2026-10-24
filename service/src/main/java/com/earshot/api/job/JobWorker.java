@@ -51,8 +51,18 @@ public class JobWorker {
 		this.liveMeeting = live;
 	}
 
+	/**
+	 * Jobs the user started by clicking during a live meeting (type ending "_now") run anyway: "the
+	 * user knows why" (owner, 2026-10-24). Everything else waits for the meeting and gives way to it.
+	 */
+	private static final ThreadLocal<Boolean> CLICKED_DURING_LIVE = ThreadLocal.withInitial(() -> false);
+
+	public static boolean clickedDuringLive() {
+		return CLICKED_DURING_LIVE.get();
+	}
+
 	public boolean mustPause() {
-		return liveMeeting.getAsBoolean();
+		return liveMeeting.getAsBoolean() && !CLICKED_DURING_LIVE.get();
 	}
 
 	public void checkpoint() {
@@ -80,7 +90,7 @@ public class JobWorker {
 	private void loop() {
 		while (running) {
 			try {
-				var job = mustPause() ? null : jobs.claim().orElse(null);
+				var job = (mustPause() ? jobs.claimClickedDuringLive() : jobs.claim()).orElse(null);
 				if (job == null) {
 					synchronized (wake) {
 						wake.wait(2_000);
@@ -104,11 +114,12 @@ public class JobWorker {
 			if (h == null) {
 				throw new IllegalStateException("no handler for " + job.type());
 			}
+			CLICKED_DURING_LIVE.set(job.type().endsWith("_now"));
 			h.run(job, this);
 			jobs.finish(job.id());
 			log.info("event=job_done id={} type={} took_s={}", job.id(), job.type(), (System.nanoTime() - t) / 1_000_000_000);
-		} catch (Paused | com.earshot.api.llm.Insights.HeldForLive p) {
-			// A meeting started: local AI work waits for it to end, like any batch job.
+		} catch (Paused p) {
+			// A meeting started: batch work waits for it to end.
 			jobs.requeue(job.id(), p.getMessage());
 			log.info("event=job_paused id={} type={}", job.id(), job.type());
 		} catch (LlmClient.LlmUnavailable e) {
@@ -124,6 +135,8 @@ public class JobWorker {
 				jobs.requeue(job.id(), e.toString());
 				sleepQuietly(3_000);
 			}
+		} finally {
+			CLICKED_DURING_LIVE.set(false);
 		}
 	}
 

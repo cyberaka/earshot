@@ -30,7 +30,7 @@ public class ApiErrors {
 	}
 
 	/** An optional AI feature that is off, or local while a meeting is live: say which and why. */
-	@ExceptionHandler({ Insights.Off.class, Insights.HeldForLive.class })
+	@ExceptionHandler(Insights.Off.class)
 	public ResponseEntity<Map<String, String>> insightsUnavailable(RuntimeException e) {
 		return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("message", String.valueOf(e.getMessage())));
 	}

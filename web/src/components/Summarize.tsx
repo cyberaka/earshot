@@ -10,13 +10,13 @@ function fmtTokens(n: number) {
  * The only way a summary is made (owner rule, 2026-10-24): the user clicks, and the button says
  * beforehand what one click sends and to whom. No loop, nothing automatic.
  */
-export default function SummarizeButton({ provider, estimate, onRun, again, held }: {
+export default function SummarizeButton({ provider, estimate, onRun, again, liveNow }: {
   provider: Provider
   estimate: () => Promise<SummaryEstimate>
   onRun: () => Promise<unknown>
   again: boolean
-  /** Why it can't run right now (the local model during a live meeting). */
-  held?: string | null
+  /** A meeting is being transcribed: a click still runs (the user's call), with a warning for the local model. */
+  liveNow?: boolean
 }) {
   const [est, setEst] = useState<SummaryEstimate | null>(null)
   const [busy, setBusy] = useState(false)
@@ -25,7 +25,6 @@ export default function SummarizeButton({ provider, estimate, onRun, again, held
   useEffect(refresh, [refresh])
 
   if (provider === 'off') return null
-  if (held) return <span className={ui.muted}>{held}</span>
   const cloud = provider === 'openai' || provider === 'anthropic'
   const size = est ? `~${fmtTokens(est.tokens)} tokens` : null
 
@@ -46,6 +45,8 @@ export default function SummarizeButton({ provider, estimate, onRun, again, held
           : cloud ? `One request with the whole transcript${est ? ` (${est.lines} lines)` : ''}. It costs money; nothing is sent until you click.`
             : 'Runs on the local model: free, but it uses the GPU for a minute or two.'}
       </span>
+      {liveNow && !cloud && <span className={ui.muted} style={{ color: 'var(--warn)' }}>
+        A meeting is live: the local model will share the GPU with transcription and may slow the live transcript.</span>}
       {error && <span className={ui.error}>{error}</span>}
     </div>
   )

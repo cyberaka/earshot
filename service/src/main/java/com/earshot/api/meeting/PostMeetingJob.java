@@ -87,7 +87,7 @@ public class PostMeetingJob implements JobWorker.Handler {
 			// The user asked for a full pass (Re-transcribe): the current transcript stays visible until the new one replaces it.
 			stage = "live";
 		}
-		if ("live".equals(stage) && !"post_meeting_full".equals(job.type())) {
+		if ("live".equals(stage) && !job.type().startsWith("post_meeting_full")) {
 			finishFromLive(job, worker, meetingId, convId, recId, mode, files, language, "1".equals(m[3]) ? m[2] : m[2] + " (continued)", day);
 			return;
 		}

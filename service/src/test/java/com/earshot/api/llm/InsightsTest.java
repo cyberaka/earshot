@@ -16,10 +16,11 @@ class InsightsTest {
 	}
 
 	@Test
-	void liveSummaryNeverUsesTheLocalModel() {
-		// It would share the GPU with live transcription (meeting 20, 2026-10-24).
-		assertThatThrownBy(() -> Insights.validate("insights_live_summary", "local")).isInstanceOf(IllegalArgumentException.class);
-		assertThatCode(() -> Insights.validate("insights_meeting_summary", "local")).doesNotThrowAnyException();
+	void theLocalModelCanBeChosenForEveryChatFeature() {
+		// A click during a live meeting is honoured (owner, 2026-10-24): the choice is the user's, the UI warns.
+		for (String key : new String[] { "insights_live_summary", "insights_meeting_summary", "insights_ask" }) {
+			assertThatCode(() -> Insights.validate(key, "local")).doesNotThrowAnyException();
+		}
 	}
 
 	@Test
