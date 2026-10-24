@@ -65,6 +65,7 @@ class LiveStart(BaseModel):
     vocabulary: list[str] = []
     max_segment_s: float = 15.0
     seeds: dict[str, list[dict]] = {}  # channel -> [{"label", "embedding"}] from earlier parts
+    speaker_threshold: float = 0.6  # live separation cut-off (setting live_speaker_threshold, BUGS.md B-14)
 
 
 def memory() -> dict:
@@ -204,7 +205,7 @@ def embed(req: Embed):
 @app.post("/ml/live/{session_id}/start", dependencies=[Depends(check_secret)])
 async def live_start(session_id: str, req: LiveStart):
     live.start(session_id, req.language or "en", req.max_segment_s, asyncio.get_running_loop(), req.seeds,
-               asr.vocabulary_prompt(req.vocabulary))
+               asr.vocabulary_prompt(req.vocabulary), req.speaker_threshold)
     return {"ok": True}
 
 

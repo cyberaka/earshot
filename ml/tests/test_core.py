@@ -225,3 +225,18 @@ def test_aggregate_parts_shape():
         for it in items:
             assert it["first"] == first and it["channels"] > 0 and it["name"]
             first += it["channels"]
+
+
+def test_live_speaker_threshold_reaches_the_diarizer():
+    # Setting live_speaker_threshold (BUGS.md B-14): 0.60 by default, clamped to a sane range.
+    from earshot_ml import live
+    try:
+        s = live.start("t-thr", "en", 15.0, None, speaker_threshold=0.6)
+        live._speaker_windows(s, "system", np.zeros(SAMPLE_RATE * 2, dtype=np.float32), 0.0)
+        assert s.diarizers["system"].threshold == 0.6
+        assert live.start("t-thr2", "en", 15.0, None, speaker_threshold=5).speaker_threshold == 0.9
+    finally:
+        for k in ("t-thr", "t-thr2"):
+            if k in live.SESSIONS:
+                live.stop(k)
+                del live.SESSIONS[k]

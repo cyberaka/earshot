@@ -27,6 +27,7 @@ class Session:
     language: str = "en"
     max_segment_s: float = 15.0
     prompt: str | None = None  # names and terms (R-3), as Whisper's initial prompt
+    speaker_threshold: float = 0.6  # live speaker separation cut-off (BUGS.md B-14)
     segmenters: dict[str, StreamSegmenter] = field(default_factory=dict)
     received_s: dict[str, float] = field(default_factory=dict)
     # Next expected sample per channel, for framed streams (sample index + pcm).
@@ -55,14 +56,18 @@ def active() -> bool:
     return any(not s.stopped for s in SESSIONS.values())
 
 
-def start(session_id: str, language: str, max_segment_s: float, loop, seeds: dict | None = None, prompt: str | None = None) -> Session:
+def start(session_id: str, language: str, max_segment_s: float, loop, seeds: dict | None = None, prompt: str | None = None,
+          speaker_threshold: float = 0.6) -> Session:
     s = SESSIONS.get(session_id)
     if s is None or s.stopped:
-        s = Session(session_id, language, max_segment_s, loop=loop, prompt=prompt)
+        # A cut-off outside this range would merge everyone or split every sentence.
+        s = Session(session_id, language, max_segment_s, loop=loop, prompt=prompt,
+                    speaker_threshold=min(0.9, max(0.3, speaker_threshold)))
         SESSIONS[session_id] = s
+        log.info("event=live_started session=%s language=%s speaker_threshold=%.2f", session_id, language, s.speaker_threshold)
         # Speakers from earlier parts of a resumed meeting.
         for channel, known in (seeds or {}).items():
-            d = s.diarizers.setdefault(channel, speakers.LiveDiarizer())
+            d = s.diarizers.setdefault(channel, speakers.LiveDiarizer(threshold=s.speaker_threshold))
             for k in known:
                 d.seed(k["label"], np.array(k["embedding"], dtype=np.float32))
         threading.Thread(target=_worker, args=(s,), daemon=True, name=f"live-asr-{session_id}").start()
@@ -220,7 +225,7 @@ def lag(s: Session, channel: str, done_until: float) -> float:
 def _speaker_windows(s: Session, channel: str, audio: np.ndarray, start_s: float) -> list[tuple[float, float, str]]:
     d = s.diarizers.get(channel)
     if d is None:
-        d = s.diarizers[channel] = speakers.LiveDiarizer()
+        d = s.diarizers[channel] = speakers.LiveDiarizer(threshold=s.speaker_threshold)
     try:
         return d.add(audio, start_s)
     except Exception:

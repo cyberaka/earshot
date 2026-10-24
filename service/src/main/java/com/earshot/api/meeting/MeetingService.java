@@ -277,7 +277,8 @@ public class MeetingService {
 		live = l;
 		try {
 			String session = "m" + meetingId;
-			ml.liveStart(session, lang, settings.num("live_max_segment_seconds"), seeds, vocabulary.forMeeting(meetingId));
+			ml.liveStart(session, lang, settings.num("live_max_segment_seconds"), seeds, vocabulary.forMeeting(meetingId),
+					settings.num("live_speaker_threshold"));
 			l.ml = HttpClient.newHttpClient().newWebSocketBuilder().connectTimeout(Duration.ofSeconds(5))
 					.buildAsync(URI.create(ml.liveEventsUrl(session)), new Listener(l)).join();
 			var channels = channels(mode, req);

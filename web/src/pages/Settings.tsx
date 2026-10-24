@@ -7,7 +7,7 @@ const GROUPS: { title: string; keys: string[] }[] = [
   { title: 'Transcription', keys: ['language', 'vocabulary', 'no_speech_prob', 'avg_logprob', 'compression_ratio'] },
   { title: 'Live meetings', keys: ['live_max_segment_seconds', 'live_lag_warn_seconds'] },
   { title: 'Conversations', keys: ['conversation_gap_seconds', 'max_conversation_minutes', 'min_conversation_seconds'] },
-  { title: 'Speakers', keys: ['me_threshold', 'me_ambient_threshold', 'person_threshold', 'me_min_speech_seconds', 'diarization_threshold'] },
+  { title: 'Speakers', keys: ['live_speaker_threshold', 'me_threshold', 'me_ambient_threshold', 'person_threshold', 'me_min_speech_seconds', 'diarization_threshold'] },
   { title: 'Import', keys: ['recorder_filename_pattern'] },
   { title: 'Retention', keys: ['raw_audio_retention_days', 'ambient_audio_retention_days', 'unknown_voiceprint_retention_days', 'backup_retention_days', 'min_free_disk_gb'] },
 ]

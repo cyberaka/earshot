@@ -80,6 +80,10 @@ earshot:
     person_threshold: 0.6
     me_min_speech_seconds: 10
     diarization_threshold: 0.68
+    # Live speaker separation: a voice this far (cosine distance) from everyone heard so far is a new speaker.
+    # 0.60 measured on the 24 Oct class against Zoom's transcript (BUGS.md B-14): 99.0% of lines right
+    # ~30 s after they are written, vs 96.9% at 0.68, which merged students into the instructor until late.
+    live_speaker_threshold: 0.6
     qa_prompt_max_tokens: 3000
     live_max_segment_seconds: 15
     live_lag_warn_seconds: 60          # a banner when the transcript is this far behind the room

@@ -8,7 +8,7 @@ For the post-call huddle on 2026-10-24, start with **[Huddle summary](#huddle-su
 |---|-----|----------|--------|
 | B-16 | Short fragments and junk lines ("center." alone; "कि", "soft.", "Bye, tool.") | Low | Open |
 | B-15 | Another student's answer labelled as the user: Earshot matched the group to the user's voice at 0.66 (threshold 0.6); no "by voice" tag shown for Me | Medium | Open |
-| B-14 | Remote speakers merged or switching numbers (a participant's question labelled as the instructor) | **High** | Open: cause measured (live cut-off 0.68); 0.60 tested, owner to approve |
+| B-14 | Remote speakers merged or switching numbers (a participant's question labelled as the instructor) | **High** | **Fixed** 2026-10-24: setting `live_speaker_threshold` 0.60 (was a fixed 0.68) |
 | B-13 | Names and jargon misheard ("Aveena" for Abhinav, "Repito" for Rapido) | Medium | **Mostly fixed** 2026-10-24: vocabulary list (R-3), when filled in |
 | B-12 | Text in other writing systems ("やあみし") | Low | **Fixed** 2026-10-24 |
 | B-11 | Live transcription skipped the hallucination filters ("Thank you." / "Bye." in silence) | Medium | **Fixed** 2026-10-24 (partly: real "Okay."s score the same as invented ones) |
@@ -65,6 +65,10 @@ For the post-call huddle on 2026-10-24, start with **[Huddle summary](#huddle-su
 
   - At 0.68 students are separated only late in the meeting, after enough speech has been heard; an agent reading the live file sees them as Mukesh until then.
   - At 0.60, meeting 33 part 2 (speakers + mic audio) gives Amit his own speaker for exactly 23:17:19–23:18:09.
+- **Fixed (2026-10-24, owner approved 0.60):** new setting `live_speaker_threshold` (Settings → Speakers), default 0.60, sent to the speech engine at each meeting start (logged as `event=live_started … speaker_threshold=0.60`).
+  - Checked through the live path by replaying 200 s of meeting 33 part 2 as a meeting: Amit's question ("so Mokish…" to "…perspective of that?") is its own speaker, and Mukesh resumes at "Are you referring to the 50%…".
+  - Only Amit's one-word "Yes." before it stays with Mukesh: too short to judge by voice.
+  - Not changed: the batch `diarization_threshold` (Re-transcribe, imports), which is still 0.68 and untested on this class.
 
 - **Seen:** quality review of meeting 20 (ISB class) from the user's ISB-CTO session, 2026-10-24.
   - Speaker numbers sometimes switch.

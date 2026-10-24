@@ -96,9 +96,10 @@ public class MlClient {
 		post(ml, "/ml/live/" + sessionId + "/language", Map.of("language", language));
 	}
 
-	public void liveStart(String sessionId, String language, double maxSegmentS, Map<String, ?> seeds, List<String> vocabulary) {
+	public void liveStart(String sessionId, String language, double maxSegmentS, Map<String, ?> seeds, List<String> vocabulary,
+			double speakerThreshold) {
 		post(ml, "/ml/live/" + sessionId + "/start", Map.of("language", language, "max_segment_s", maxSegmentS, "seeds", seeds,
-				"vocabulary", vocabulary));
+				"vocabulary", vocabulary, "speaker_threshold", speakerThreshold));
 	}
 
 	public void liveStop(String sessionId) {
