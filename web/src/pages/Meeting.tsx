@@ -189,8 +189,8 @@ function StartMeeting() {
           <label className={s.check}><input type="checkbox" checked={replay} onChange={e => setReplay(e.target.checked)} /> Replay audio files instead of a device (testing)</label>
           {replay && (
             <div className={s.row}>
-              {mode !== 'system' && <label className={ui.field}>Mic file (path on this Mac)<input className={ui.input} value={micFile} onChange={e => setMicFile(e.target.value)} placeholder="/path/to/mic.wav" /></label>}
-              {mode !== 'mic' && <label className={ui.field}>System file (path on this Mac)<input className={ui.input} value={systemFile} onChange={e => setSystemFile(e.target.value)} placeholder="/path/to/system.wav" /></label>}
+              {mode !== 'system' && <ReplayFile label="Mic file" value={micFile} onChange={setMicFile} onError={setError} />}
+              {mode !== 'mic' && <ReplayFile label={mode === 'system' ? 'Audio or video file' : 'System (call) file'} value={systemFile} onChange={setSystemFile} onError={setError} />}
             </div>
           )}
           <label className={ui.field}>Language
@@ -305,6 +305,35 @@ function finishingLabel(stage?: string | null) {
   if (stage?.startsWith('catching up')) return 'Catching up…'
   if (stage === 'transcribe') return 'Re-transcribing…'
   return 'Finishing…'
+}
+
+/**
+ * A file for "Replay audio files": drop it here or pick it, and it is uploaded to Earshot on this Mac
+ * (browsers never give a page a file's path); or paste a path (Finder: ⌥⌘C copies one).
+ */
+function ReplayFile({ label, value, onChange, onError }: { label: string; value: string; onChange: (p: string) => void; onError: (e: string) => void }) {
+  const [busy, setBusy] = useState<string | null>(null)
+  const [over, setOver] = useState(false)
+  const pick = useRef<HTMLInputElement>(null)
+  async function take(f: File | undefined) {
+    if (!f) return
+    setBusy(f.name)
+    try { onChange((await api.replayFile(f)).path) } catch (e) { onError(e instanceof Error ? e.message : String(e)) }
+    setBusy(null)
+  }
+  return (
+    <label className={ui.field} style={{ flex: '1 1 100%', minWidth: 0 }} onDragOver={e => { e.preventDefault(); setOver(true) }} onDragLeave={() => setOver(false)}
+      onDrop={e => { e.preventDefault(); setOver(false); take(e.dataTransfer.files[0]) }}>
+      {label}
+      <span style={{ display: 'flex', gap: 8 }}>
+        <input className={ui.input} style={{ flex: 1, minWidth: 0, ...(over ? { outline: '2px dashed var(--accent)' } : {}) }} value={busy ? `Uploading ${busy}…` : value}
+          disabled={!!busy} onChange={e => onChange(e.target.value)} placeholder="Drop a file here, or paste its path" />
+        <button type="button" className={ui.btnSmall} disabled={!!busy} onClick={() => pick.current?.click()}>Choose…</button>
+      </span>
+      <input ref={pick} type="file" accept="audio/*,video/*,.flac,.m4a,.mp4" hidden onChange={e => { take(e.target.files?.[0]); e.target.value = '' }} />
+      <span className={ui.muted}>WAV, FLAC, MP3, M4A or a Zoom MP4; it is copied into Earshot's data folder.</span>
+    </label>
+  )
 }
 
 /** The live transcript file's full path, to copy into the agent that reads it (Earshot's main output). */

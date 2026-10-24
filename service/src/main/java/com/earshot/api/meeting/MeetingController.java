@@ -28,10 +28,41 @@ public class MeetingController {
 	private final MlClient ml;
 	private final JdbcClient db;
 
-	public MeetingController(MeetingService meetings, MlClient ml, JdbcClient db) {
+	private final java.nio.file.Path replayDir;
+
+	public MeetingController(MeetingService meetings, MlClient ml, JdbcClient db, com.earshot.api.config.EarshotProperties props) {
 		this.meetings = meetings;
 		this.ml = ml;
 		this.db = db;
+		this.replayDir = props.data().resolve("audio/replay");
+	}
+
+	/**
+	 * A file dropped or picked for "Replay audio files": browsers never give a page a file's path, so
+	 * the file is uploaded and turned into 16 kHz mono FLAC here (any format ffmpeg reads, Zoom's MP4
+	 * included). Returns the path to replay. Same name again replaces the earlier copy.
+	 */
+	@PostMapping("/replay-file")
+	public Map<String, Object> replayFile(@RequestParam("file") MultipartFile file) throws IOException, InterruptedException {
+		String original = file.getOriginalFilename() == null ? "audio" : file.getOriginalFilename();
+		String base = original.replaceAll("\\.[A-Za-z0-9]+$", "").replaceAll("[^A-Za-z0-9._-]+", "-").replaceAll("^-+|-+$", "");
+		java.nio.file.Files.createDirectories(replayDir);
+		var upload = java.nio.file.Files.createTempFile(replayDir, "upload-", ".tmp");
+		var out = replayDir.resolve((base.isEmpty() ? "audio" : base) + ".flac");
+		try {
+			file.transferTo(upload);
+			var p = new ProcessBuilder("ffmpeg", "-loglevel", "error", "-y", "-i", upload.toString(), "-vn", "-ac", "1", "-ar", "16000",
+					"-c:a", "flac", out.toString()).redirectErrorStream(true).start();
+			String err = new String(p.getInputStream().readAllBytes()).strip();
+			if (p.waitFor() != 0) {
+				org.slf4j.LoggerFactory.getLogger(MeetingController.class).warn("event=replay_file_unreadable name={} reason={}", original,
+						err.replace('\n', ' '));
+				throw new IllegalArgumentException("“" + original + "” has no audio Earshot can read. Try a WAV, FLAC, MP3, M4A or MP4 file.");
+			}
+		} finally {
+			java.nio.file.Files.deleteIfExists(upload);
+		}
+		return Map.of("path", out.toString(), "name", original);
 	}
 
 	/** Devices and whether a meeting is already live. */

@@ -234,6 +234,8 @@ export const api = {
   meetings: () => get<{ id: number; title: string; audio_mode: string; started_at: string; ended_at: string | null; status: string; parts: number; duration_s: number | null }[]>('/api/meetings'),
   startMeeting: (body: Record<string, unknown>) => send<{ meetingId: number }>('POST', '/api/meetings', body),
   stopMeeting: (id: number) => send('POST', `/api/meetings/${id}/stop`),
+  /** Uploads an audio or video file for "Replay audio files" and returns its path on this Mac. */
+  replayFile: (file: File) => { const f = new FormData(); f.append('file', file); return fetch('/api/meetings/replay-file', { method: 'POST', body: f }).then(r => json<{ path: string; name: string }>(r)) },
   retranscribeMeeting: (id: number) => send<{ queued: number; audioS: number }>('POST', `/api/meetings/${id}/retranscribe`),
   resumeMeeting: (id: number, body: Record<string, unknown>) => send<{ meetingId: number }>('POST', `/api/meetings/${id}/resume`, body),
   switchMeetingLanguage: (id: number, language: string) => send<{ language: string | null }>('POST', `/api/meetings/${id}/language`, { language }),
