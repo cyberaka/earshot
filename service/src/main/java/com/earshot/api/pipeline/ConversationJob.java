@@ -15,7 +15,6 @@ import com.earshot.api.export.MarkdownExporter;
 import com.earshot.api.job.JobWorker;
 import com.earshot.api.job.Jobs;
 import com.earshot.api.ml.MlClient;
-import com.earshot.api.search.Indexer;
 import com.earshot.api.settings.Settings;
 import com.earshot.api.speaker.SpeakerMatcher;
 
@@ -37,21 +36,17 @@ public class ConversationJob implements JobWorker.Handler {
 	private final Settings settings;
 	private final com.earshot.api.settings.Vocabulary vocabulary;
 	private final SpeakerMatcher matcher;
-	private final Enricher enricher;
-	private final Indexer indexer;
 	private final MarkdownExporter exporter;
 	private final Jobs jobs;
 	private final JsonMapper json;
 
-	public ConversationJob(JdbcClient db, MlClient ml, Settings settings, SpeakerMatcher matcher, Enricher enricher, Indexer indexer,
+	public ConversationJob(JdbcClient db, MlClient ml, Settings settings, SpeakerMatcher matcher,
 			MarkdownExporter exporter, Jobs jobs, JsonMapper json, com.earshot.api.settings.Vocabulary vocabulary) {
 		this.vocabulary = vocabulary;
 		this.db = db;
 		this.ml = ml;
 		this.settings = settings;
 		this.matcher = matcher;
-		this.enricher = enricher;
-		this.indexer = indexer;
 		this.exporter = exporter;
 		this.jobs = jobs;
 		this.json = json;
@@ -92,8 +87,9 @@ public class ConversationJob implements JobWorker.Handler {
 					}
 				}
 				case "transcribed" -> transcribe(c);
-				case "enriched" -> enricher.enrich(id);
-				case "indexed" -> indexer.indexConversation(id);
+				// Summaries and semantic vectors are made only when the user clicks (owner rule, 2026-10-24).
+				case "enriched", "indexed" -> {
+				}
 				case "exported" -> exporter.exportDay(c.day());
 				default -> throw new IllegalStateException(stage);
 			}

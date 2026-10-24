@@ -12,15 +12,20 @@ const GROUPS: { title: string; keys: string[] }[] = [
   { title: 'Retention', keys: ['raw_audio_retention_days', 'ambient_audio_retention_days', 'unknown_voiceprint_retention_days', 'backup_retention_days', 'min_free_disk_gb'] },
 ]
 
-/** The optional AI features, and which providers each can use (the service enforces the same rules). */
+/**
+ * The optional AI features, and which providers each can use (the service enforces the same rules).
+ * Choosing a provider only shows the button: nothing runs until the user clicks it (owner rule, 2026-10-24).
+ */
 const FEATURES: { key: InsightFeature; label: string; hint: string; providers: Provider[] }[] = [
-  { key: 'live_summary', label: 'Live summary', hint: 'Running summary, topics and decisions during a meeting. Cloud only: a local model would slow live transcription.', providers: ['off', 'openai', 'anthropic'] },
-  { key: 'meeting_summary', label: 'Meeting summary', hint: 'Title, summary and action items after a meeting or import.', providers: ['off', 'local', 'openai', 'anthropic'] },
-  { key: 'ask', label: 'Ask', hint: 'Questions about a meeting, a day or a date range. A local model answers only when no meeting is live.', providers: ['off', 'local', 'openai', 'anthropic'] },
-  { key: 'semantic_search', label: 'Semantic search', hint: 'Finds lines by meaning, not just words. Keyword search always works without it.', providers: ['off', 'local', 'openai'] },
+  { key: 'live_summary', label: 'Summary during a meeting', hint: 'A Summarize button on the live meeting: summary, topics and decisions so far. Cloud only: a local model would slow live transcription.', providers: ['off', 'openai', 'anthropic'] },
+  { key: 'meeting_summary', label: 'Summary after a meeting', hint: 'A Summarize button on finished meetings and daily-notes conversations: summary and action items.', providers: ['off', 'local', 'openai', 'anthropic'] },
+  { key: 'ask', label: 'Ask', hint: 'One answer per question you type, about a meeting, a day or a date range. A local model answers only when no meeting is live.', providers: ['off', 'local', 'openai', 'anthropic'] },
+  { key: 'semantic_search', label: 'Search by meaning', hint: 'A "by meaning" tick box on Search, and a button that prepares new lines for it. Keyword search always works without it.', providers: ['off', 'local', 'openai'] },
 ]
 const INSIGHT_KEYS = ['insights_model_local', 'insights_model_openai', 'insights_model_anthropic', 'insights_embedding_local', 'insights_embedding_openai',
-  'summary_interval_seconds', 'summary_every_segments', 'qa_prompt_max_tokens']
+  'qa_prompt_max_tokens']
+// Settings from the removed automatic summary loop: hidden if an old value is still stored.
+const RETIRED = ['summary_interval_seconds', 'summary_every_segments']
 
 /** Runtime settings (NF-7): stored in the setting table, defaults from application.yaml. */
 export default function Settings() {
@@ -50,7 +55,7 @@ export default function Settings() {
   }
 
   if (!values) return <span className={ui.muted}>{error ?? 'Loading…'}</span>
-  const known = new Set([...GROUPS.flatMap(g => g.keys), ...INSIGHT_KEYS, ...FEATURES.map(f => `insights_${f.key}`)])
+  const known = new Set([...GROUPS.flatMap(g => g.keys), ...INSIGHT_KEYS, ...RETIRED, ...FEATURES.map(f => `insights_${f.key}`)])
   const rest = Object.keys(values).filter(k => !known.has(k))
   const groups = rest.length ? [...GROUPS, { title: 'Other', keys: rest }] : GROUPS
   const value = (k: string) => draft[k] ?? String(values[k] ?? '')
@@ -75,7 +80,8 @@ export default function Settings() {
       <section className={ui.card}>
         <h2 className={s.h2}>Insights (optional AI)</h2>
         <p className={ui.muted} style={{ margin: 0 }}>
-          Earshot's job is the transcript: who said what, when, on this Mac. These extras are off unless you choose a provider.
+          Earshot's job is the transcript: who said what, when, on this Mac. These extras are off unless you choose a provider,
+          and even then <b>nothing runs until you click its button</b>: no timers, nothing after a meeting or import.
           Each meeting's transcript is also written to <span className="mono">data/live/</span> for any agent you use.
         </p>
         <div className={s.features}>
@@ -91,7 +97,7 @@ export default function Settings() {
                 </label>
                 <span className={ui.muted}>{f.hint}</span>
                 {(p === 'openai' || p === 'anthropic') && (
-                  <span className={s.privacy}>Sends transcript text (never audio) to {PROVIDER_LABEL[p]}.</span>
+                  <span className={s.privacy}>When you click, sends transcript text (never audio) to {PROVIDER_LABEL[p]}, at a cost per click.</span>
                 )}
                 {(p === 'openai' || p === 'anthropic') && keySet[p] === false && (
                   <span className={ui.error}>No {p === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY'} set: add it to <span className="mono">.env</span> and restart Earshot.</span>

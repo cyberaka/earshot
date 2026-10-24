@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { api, LANGUAGES, PROVIDER_LABEL, fmtElapsed, nearest, speakerColor, type AttachmentView, type Citation, type Devices, type MeetingSummary, type MeetingView, type NoteView, type Person, type SegmentView, type SpeakerView } from '../api'
+import SummarizeButton from '../components/Summarize'
+import { api, LANGUAGES, fmtElapsed, nearest, speakerColor, type AttachmentView, type Citation, type Devices, type MeetingSummary, type MeetingView, type NoteView, type Person, type SegmentView, type SpeakerView } from '../api'
 import { Answer, useAsk } from '../components/AskBox'
 import { NoteEditor, NoteItem } from '../components/Notes'
 import { NameSpeaker } from './Today'
@@ -46,7 +47,7 @@ function StartMeeting() {
   const health = useHealth(30_000)
   const features = health?.insights?.features
   // The agenda only feeds the optional AI (live summary, Ask); without them it would do nothing.
-  const usesAgenda = !!features && (features.live_summary !== 'off' || features.ask !== 'off')
+  const usesAgenda = !!features && (features.live_summary !== 'off' || features.meeting_summary !== 'off' || features.ask !== 'off')
   const cloud = !!health?.insights?.sendsTextOff.length
   // Resuming defaults to the audio source the meeting last used.
   useEffect(() => { if (resumeId) api.meeting(resumeId).then(mv => { setResumeTitle(mv.title); setMode(mv.audio_mode); setRecordedS(mv.parts.reduce((t, p) => t + p.duration_s, 0)) }).catch(() => {}) }, [resumeId])
@@ -233,7 +234,7 @@ interface LiveStatus {
   lagS: number; asrRtf: number; asrRtfAvg?: number; elapsedS: number; warning: string | null; device: string | null; language?: string | null
   /** Plain-language warning when transcription can't keep up (null when it can). */
   behind?: string | null
-  mlMemoryMb?: number | null; transcriptFile?: string; liveSummary?: string | null
+  mlMemoryMb?: number | null; transcriptFile?: string; summaryWith?: string | null
 }
 
 function gb(mb: number) { return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB` }
@@ -352,7 +353,11 @@ function LiveMeeting({ id }: { id: number }) {
   const { items, setItems, busy, run } = useAsk('meeting', String(id))
   const health = useHealth(30_000)
   const askWith = health?.insights?.features.ask ?? 'off'
-  const summaryWith = health?.insights?.features.live_summary ?? 'off'
+  const features = health?.insights?.features
+  // During a meeting the "during" provider (cloud only); afterwards the "after" one, which may be local.
+  const duringWith = features?.live_summary ?? 'off'
+  const afterWith = features?.meeting_summary ?? 'off'
+  const estimateSummary = useCallback(() => api.meetingSummaryEstimate(id), [id])
 
   const reload = useCallback(async () => {
     const mv = await api.meeting(id)
@@ -571,12 +576,17 @@ function LiveMeeting({ id }: { id: number }) {
         </section>
 
         <aside className={s.side} aria-label="Meeting notes and optional insights">
-          {(summary || summaryWith !== 'off') && <section className={ui.card}>
+          {(summary || duringWith !== 'off' || afterWith !== 'off') && <section className={ui.card}>
             <div className={s.panelHead}>
-              <h2 className={s.h2}>Running summary</h2>
-              {summary?.updatedAt && <span className={ui.muted}>updated {new Date(summary.updatedAt).toLocaleTimeString()}</span>}
+              <h2 className={s.h2}>Summary</h2>
+              {summary?.updatedAt && <span className={ui.muted} title={summary.by}>
+                {new Date(summary.updatedAt).toLocaleTimeString()}{summary.lines ? ` · ${summary.lines} lines` : ''}
+              </span>}
             </div>
-            {!summary ? <span className={ui.muted}>{m.live ? `Appears after the first few minutes (${PROVIDER_LABEL[summaryWith]}).` : 'No summary for this meeting.'}</span> : (
+            <SummarizeButton provider={m.live ? (duringWith !== 'off' ? duringWith : afterWith) : afterWith} estimate={estimateSummary}
+              again={!!summary} onRun={() => api.summarizeMeeting(id).then(setSummary)}
+              held={m.live && duringWith === 'off' && afterWith === 'local' ? 'The summary uses the local model: click Summarize after Stop, so transcription keeps the GPU.' : null} />
+            {summary && (
               <>
                 <ul className={s.bullets}>{summary.summary.map((b, i) => <li key={i}>{b}</li>)}</ul>
                 {summary.topics.length > 0 && <div className={s.tags}>{summary.topics.map(t => <span key={t} className={ui.chip} style={{ background: 'var(--border-soft)', color: 'var(--ink-2)' }}>{t}</span>)}</div>}

@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { api, todayLocal, type NoteHit, type SearchHit } from '../api'
+import { api, PROVIDER_LABEL, todayLocal, type IndexStatus, type NoteHit, type SearchHit } from '../api'
 import { NoteText } from '../components/Notes'
 import AskBox from '../components/AskBox'
 import { useHealth } from '../components/Shell'
@@ -15,9 +15,15 @@ function weeksAgo(n: number) {
 
 /** Hybrid search across all days (A-7) and range Q&A (A-9). */
 export default function Search() {
-  const askOn = (useHealth(30_000)?.insights?.features.ask ?? 'off') !== 'off'
+  const features = useHealth(30_000)?.insights?.features
+  const askOn = (features?.ask ?? 'off') !== 'off'
+  const semanticOn = (features?.semantic_search ?? 'off') !== 'off'
   const [params, setParams] = useSearchParams()
   const q = params.get('q') ?? ''
+  // By meaning: one embedding call per search, only when ticked (owner rule, 2026-10-24).
+  const meaning = params.get('meaning') === '1'
+  const [index, setIndex] = useState<IndexStatus | null>(null)
+  const [indexing, setIndexing] = useState(false)
   const [input, setInput] = useState(q)
   const [from, setFrom] = useState(weeksAgo(4))
   const [to, setTo] = useState(todayLocal())
@@ -28,13 +34,23 @@ export default function Search() {
   useEffect(() => { setInput(q) }, [q])
   useEffect(() => {
     if (!q) { setHits(null); setNoteHits([]); return }
-    api.search(q).then(r => { setHits(r.transcript); setNoteHits(r.notes) }).catch(e => setError(String(e)))
-  }, [q])
+    setError(null)
+    api.search(q, meaning && semanticOn).then(r => { setHits(r.transcript); setNoteHits(r.notes) }).catch(e => setError(String(e)))
+  }, [q, meaning, semanticOn])
+  useEffect(() => { if (semanticOn) api.indexStatus().then(setIndex).catch(() => setIndex(null)) }, [semanticOn])
 
   function submit(e: FormEvent) {
     e.preventDefault()
-    setParams(input.trim() ? { q: input.trim() } : {})
+    setParams(input.trim() ? { q: input.trim(), ...(meaning ? { meaning: '1' } : {}) } : {})
   }
+
+  async function prepare() {
+    setIndexing(true)
+    setError(null)
+    try { await api.buildIndex(); setIndex(await api.indexStatus()) } catch (e) { setError(String(e)) }
+    setIndexing(false)
+  }
+  const indexCloud = index?.provider === 'openai'
 
   return (
     <>
@@ -44,6 +60,22 @@ export default function Search() {
         <input id="search-q" type="search" className={ui.input} value={input} onChange={e => setInput(e.target.value)} placeholder="Words, names or topics — misspellings are fine" />
         <button className={ui.primary}>Search</button>
       </form>
+      {semanticOn && index && (
+        <div className={s.rangeRow}>
+          <label className={ui.muted}>
+            <input type="checkbox" checked={meaning} onChange={e => {
+              const next = new URLSearchParams(params)
+              if (e.target.checked) next.set('meaning', '1'); else next.delete('meaning')
+              setParams(next)
+            }} /> Also search by meaning{indexCloud ? ' (one small OpenAI call per search)' : ' (local model)'}
+          </label>
+          {index.missing > 0 && (
+            <button type="button" className={ui.btnSmall} disabled={indexing} onClick={prepare}>
+              {indexing ? 'Preparing…' : `Prepare ${index.missing} new lines for meaning search${indexCloud && index.tokens ? ` · ~${Math.max(1, Math.round(index.tokens / 1000))}k tokens to ${PROVIDER_LABEL.openai}` : ''}`}
+            </button>
+          )}
+        </div>
+      )}
       {error && <div className={ui.error}>{error}</div>}
       {noteHits.length > 0 && (
         <section className={ui.card}>

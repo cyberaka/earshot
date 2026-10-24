@@ -38,9 +38,11 @@ public class ConversationController {
 	private final MarkdownExporter exporter;
 	private final Jobs jobs;
 	private final JobWorker worker;
+	private final com.earshot.api.pipeline.Enricher enricher;
 
 	public ConversationController(ConversationService conversations, Deletions deletions, JdbcClient db, MarkdownExporter exporter,
-			Jobs jobs, JobWorker worker) {
+			Jobs jobs, JobWorker worker, com.earshot.api.pipeline.Enricher enricher) {
+		this.enricher = enricher;
 		this.conversations = conversations;
 		this.deletions = deletions;
 		this.db = db;
@@ -75,6 +77,22 @@ public class ConversationController {
 				UPDATE action_item a SET done = :d FROM conversation c WHERE a.id = :id AND c.id = a.conversation_id RETURNING c.local_date""")
 				.param("d", req.done()).param("id", id).query(LocalDate.class).single();
 		exporter.exportDay(day);
+		return Map.of("ok", true);
+	}
+
+	/** What a click on Summarize would send for one conversation (no model call). */
+	@GetMapping("/conversations/{id}/summary")
+	public Map<String, Object> summaryEstimate(@PathVariable long id) {
+		var r = db.sql("SELECT count(*), COALESCE(sum(length(text) + 6), 0) FROM segment WHERE conversation_id = :c").param("c", id)
+				.query((rs, i) -> new long[] { rs.getLong(1), rs.getLong(2) }).single();
+		return Map.of("lines", r[0], "tokens", Math.round((r[1] + 800) / 4.0));
+	}
+
+	/** The user clicked Summarize on a conversation: one model call (owner rule, 2026-10-24). */
+	@PostMapping("/conversations/{id}/summary")
+	public Map<String, Object> summarize(@PathVariable long id) {
+		enricher.summarize(id);
+		db.sql("SELECT local_date FROM conversation WHERE id = :id").param("id", id).query(LocalDate.class).optional().ifPresent(exporter::exportDay);
 		return Map.of("ok", true);
 	}
 

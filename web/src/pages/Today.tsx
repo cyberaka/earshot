@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { api, nearest, fmtDuration, fmtElapsed, speakerColor, todayLocal, type ConversationDetail, type DayView, type NoteView, type Person, type SpeakerView } from '../api'
+import { api, nearest, fmtDuration, fmtElapsed, speakerColor, todayLocal, type ConversationDetail, type DayView, type Provider, type NoteView, type Person, type SpeakerView } from '../api'
 import AskBox from '../components/AskBox'
+import SummarizeButton from '../components/Summarize'
 import { useHealth } from '../components/Shell'
 import { ScreenshotLine } from '../components/Screenshots'
 import TimeToggle, { useTimeMode } from '../components/TimeToggle'
@@ -21,7 +22,9 @@ function longDate(date: string) {
 
 export default function Today() {
   // Ask is an optional AI feature (Settings → Insights); without it the day is transcript and notes.
-  const askOn = (useHealth(30_000)?.insights?.features.ask ?? 'off') !== 'off'
+  const features = useHealth(30_000)?.insights?.features
+  const askOn = (features?.ask ?? 'off') !== 'off'
+  const summaryWith = features?.meeting_summary ?? 'off'
   const params = useParams()
   const navigate = useNavigate()
   const [latest, setLatest] = useState<string | null>(null)
@@ -103,14 +106,16 @@ export default function Today() {
               )
             })}
           </section>
-          {current && <Conversation key={current} id={current} onChanged={load} seek={pendingSeek?.id === current ? pendingSeek.startS : null} onSeekDone={() => setPendingSeek(null)} />}
+          {current && <Conversation summaryWith={summaryWith} key={current} id={current} onChanged={load} seek={pendingSeek?.id === current ? pendingSeek.startS : null} onSeekDone={() => setPendingSeek(null)} />}
         </div>
       )}
     </>
   )
 }
 
-function Conversation({ id, onChanged, seek, onSeekDone }: { id: number; onChanged: () => void; seek: number | null; onSeekDone: () => void }) {
+function Conversation({ id, onChanged, seek, onSeekDone, summaryWith }: {
+  id: number; onChanged: () => void; seek: number | null; onSeekDone: () => void; summaryWith: Provider
+}) {
   const [d, setD] = useState<ConversationDetail | null>(null)
   const [people, setPeople] = useState<Person[]>([])
   const [naming, setNaming] = useState<SpeakerView | null>(null)
@@ -123,6 +128,7 @@ function Conversation({ id, onChanged, seek, onSeekDone }: { id: number; onChang
   const rows = useRef<Map<number, HTMLDivElement>>(new Map())
 
   const load = useCallback(() => { api.conversation(id).then(setD).catch(() => setD(null)) }, [id])
+  const estimateSummary = useCallback(() => api.conversationSummaryEstimate(id), [id])
   useEffect(() => { load(); api.people().then(p => setPeople(p.people)).catch(() => {}) }, [load])
   useEffect(() => {
     if (d && d.status !== 'done') { const t = setInterval(load, 5000); return () => clearInterval(t) }
@@ -203,6 +209,11 @@ function Conversation({ id, onChanged, seek, onSeekDone }: { id: number; onChang
           Ambient: you were not detected speaking, so this was not transcribed.{' '}
           <button className={ui.btnSmall} onClick={() => api.transcribeAmbient(d.id).then(load)}>Transcribe anyway</button>
         </div>
+      )}
+
+      {summaryWith !== 'off' && d.segments.length > 0 && (
+        <SummarizeButton provider={summaryWith} estimate={estimateSummary} again={d.summary.length > 0}
+          onRun={() => api.summarizeConversation(d.id).then(() => { load(); onChanged() })} />
       )}
 
       {(d.summary.length > 0 || d.actionItems.length > 0) && (

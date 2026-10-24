@@ -15,7 +15,6 @@ import org.springframework.transaction.annotation.Transactional;
 import com.earshot.api.llm.ChatClient;
 import com.earshot.api.llm.Insights;
 import com.earshot.api.llm.Insights.Feature;
-import com.earshot.api.llm.LlmClient.LlmUnavailable;
 import com.earshot.api.llm.LlmClient.Message;
 import com.earshot.api.speaker.SpeakerNames;
 
@@ -23,8 +22,8 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * Title, summary, action items and topics per conversation (PRD §5.2 step 10), when the optional
- * meeting summary is on (Settings → Insights; off by default). The model sees
+ * Title, summary, action items and topics for one conversation (PRD §5.2 step 10), only when the
+ * user clicks Summarize (owner rule, 2026-10-24: no LLM call without a click). The model sees
  * speakers as S1, S2, … and its output is stored with {{spk:id}} tokens, never names (§5.5).
  */
 @Service
@@ -32,8 +31,10 @@ public class Enricher {
 
 	private static final Logger log = LoggerFactory.getLogger(Enricher.class);
 	private static final Pattern S_LABEL = Pattern.compile("\\bS(\\d+)\\b");
-	// Keeps a prompt inside a small model's context; longer conversations are summarised in parts.
+	// Keeps a prompt inside a small local model's context; longer conversations are summarised in parts.
 	private static final int CHUNK_CHARS = 9000;
+	// A cloud model reads the whole transcript in one request (one charge); past this it is condensed too.
+	private static final int CLOUD_CHARS = 400_000;
 	private final JdbcClient db;
 	private final Insights insights;
 	private final SpeakerNames names;
@@ -50,24 +51,19 @@ public class Enricher {
 	}
 
 	/**
-	 * Does nothing while the meeting summary is off. A provider failure is logged and skipped:
-	 * the transcript is complete without a summary, so it never holds a meeting or import back.
+	 * One click, one summary: throws {@link Insights.Off} when no provider is chosen and
+	 * {@link Insights.HeldForLive} for the local model during a meeting, so the click says why.
 	 */
 	@Transactional
-	public void enrich(long conversationId) {
-		if (!insights.enabled(Feature.MEETING_SUMMARY)) {
-			return;
-		}
+	public void summarize(long conversationId) {
 		ChatClient llm = insights.client(Feature.MEETING_SUMMARY);
 		String model = insights.model(Feature.MEETING_SUMMARY);
-		try {
-			summarize(conversationId, llm, model);
-		} catch (LlmUnavailable | IllegalStateException e) {
-			log.warn("event=summary_skipped conversation={} provider={} reason={}", conversationId, llm.name(), e.getMessage());
-		}
+		boolean cloud = insights.provider(Feature.MEETING_SUMMARY).cloud();
+		summarize(conversationId, llm, model, cloud);
+		log.info("event=conversation_summarized conversation={} provider={} model={}", conversationId, llm.name(), model);
 	}
 
-	private void summarize(long conversationId, ChatClient llm, String model) {
+	private void summarize(long conversationId, ChatClient llm, String model, boolean cloud) {
 		var speakers = names.forConversation(conversationId);
 		var segs = db.sql("SELECT speaker_cluster_id, channel, text FROM segment WHERE conversation_id = :c ORDER BY start_s")
 				.param("c", conversationId).query((rs, i) -> new Object[] { rs.getObject(1), rs.getString(2), rs.getString(3) }).list();
@@ -95,7 +91,7 @@ public class Enricher {
 					.append('\n');
 		});
 		String transcript = render(lines);
-		if (transcript.length() > CHUNK_CHARS) {
+		if (transcript.length() > (cloud ? CLOUD_CHARS : CHUNK_CHARS)) {
 			transcript = condense(lines, legend.toString(), llm, model);
 		}
 		String prompt = """
@@ -120,7 +116,7 @@ public class Enricher {
 		out.path("topics").forEach(t -> topics.add(t.asString()));
 		db.sql("UPDATE conversation SET title = :t, summary = CAST(:s AS jsonb), topics = CAST(:tp AS jsonb) WHERE id = :id")
 				.param("t", tokens(out.path("title").asString("Conversation"), clusterOf))
-				.param("s", json.writeValueAsString(Map.of("bullets", bullets)))
+				.param("s", json.writeValueAsString(Map.of("bullets", bullets, "by", llm.name() + " · " + model, "at", java.time.Instant.now().toString())))
 				.param("tp", json.writeValueAsString(topics)).param("id", conversationId).update();
 		db.sql("DELETE FROM action_item WHERE conversation_id = :c").param("c", conversationId).update();
 		for (JsonNode a : out.path("action_items")) {

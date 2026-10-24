@@ -15,10 +15,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,7 +30,6 @@ import com.earshot.api.llm.Insights;
 import com.earshot.api.llm.Insights.Feature;
 import com.earshot.api.llm.LlmClient.Message;
 import com.earshot.api.ml.MlClient;
-import com.earshot.api.search.Indexer;
 import com.earshot.api.settings.Settings;
 import com.earshot.api.speaker.SpeakerNames;
 
@@ -44,8 +39,8 @@ import tools.jackson.databind.json.JsonMapper;
 
 /**
  * One live meeting at a time (PRD §6): capture → ML events → DB, browser and the live transcript
- * file. A running summary is an optional extra (Settings → Insights), from a cloud provider only:
- * nothing local competes with live transcription for the GPU (owner decision, 2026-10-24).
+ * file. A summary is an optional extra (Settings → Insights) made only when the user clicks, and
+ * never by the local model mid-meeting: nothing competes with live transcription for the GPU.
  */
 @Service
 public class MeetingService {
@@ -58,23 +53,24 @@ public class MeetingService {
 	private final LiveTranscript transcript;
 	private final com.earshot.api.settings.Vocabulary vocabulary;
 	private final Settings settings;
-	private final Indexer indexer;
 	private final Jobs jobs;
 	private final JobWorker worker;
 	private final MeetingSockets sockets;
 	private final JsonMapper json;
 	private final Path meetingsDir;
-	private final ExecutorService liveIndex = Executors.newSingleThreadExecutor(Thread.ofVirtual().factory());
+	private final java.util.Set<Long> summarizing = java.util.concurrent.ConcurrentHashMap.newKeySet();
+	private final com.earshot.api.export.MarkdownExporter exporter;
 	private volatile Live live;
 	private final com.earshot.api.conversation.ConversationService conversations;
 	private final com.earshot.api.speaker.SpeakerMatcher matcher;
 	private final SpeakerNames names;
 
-	public MeetingService(JdbcClient db, MlClient ml, Insights insights, LiveTranscript transcript, Settings settings, Indexer indexer,
+	public MeetingService(JdbcClient db, MlClient ml, Insights insights, LiveTranscript transcript, Settings settings,
 			Jobs jobs, JobWorker worker, MeetingSockets sockets, JsonMapper json, EarshotProperties props,
 			com.earshot.api.conversation.ConversationService conversations, com.earshot.api.speaker.SpeakerMatcher matcher, SpeakerNames names,
-			com.earshot.api.settings.Vocabulary vocabulary) {
+			com.earshot.api.settings.Vocabulary vocabulary, com.earshot.api.export.MarkdownExporter exporter) {
 		this.vocabulary = vocabulary;
+		this.exporter = exporter;
 		this.conversations = conversations;
 		this.matcher = matcher;
 		this.names = names;
@@ -83,7 +79,6 @@ public class MeetingService {
 		this.insights = insights;
 		this.transcript = transcript;
 		this.settings = settings;
-		this.indexer = indexer;
 		this.jobs = jobs;
 		this.worker = worker;
 		this.sockets = sockets;
@@ -102,9 +97,6 @@ public class MeetingService {
 		final String audioMode;
 		final Instant startedAt;
 		final ZoneId zone = ZoneId.systemDefault();
-		final AtomicInteger newSegments = new AtomicInteger();
-		final AtomicBoolean summarizing = new AtomicBoolean();
-		volatile Instant lastSummary = Instant.now();
 		volatile double lagS;
 		volatile double rtf;
 		volatile double rtfAvg;
@@ -387,17 +379,6 @@ public class MeetingService {
 				seg.put("live", true);
 				sockets.broadcast(l.meetingId, Map.of("type", "segment", "segment", seg));
 				transcript.changed(l.meetingId);
-				l.newSegments.incrementAndGet();
-				// Semantic search vectors: only if that option is on, and never a local model mid-meeting.
-				if (insights.usableNow(Feature.SEMANTIC_SEARCH)) {
-					liveIndex.submit(() -> {
-						try {
-							indexer.indexConversation(l.conversationId);
-						} catch (Exception ex) {
-							log.warn("event=live_index_failed reason={}", ex.getMessage());
-						}
-					});
-				}
 			}
 			case "speakers" -> {
 				String channel = ev.get("channel").asString();
@@ -511,7 +492,7 @@ public class MeetingService {
 		m.put("mlMemoryMb", l.mlMemoryMb);
 		m.put("behind", behind(l));
 		m.put("transcriptFile", transcript.dir().resolve("current.md").toString());
-		m.put("liveSummary", insights.usableNow(Feature.LIVE_SUMMARY) ? insights.provider(Feature.LIVE_SUMMARY).id() : null);
+		m.put("summaryWith", insights.usableNow(Feature.LIVE_SUMMARY) ? insights.provider(Feature.LIVE_SUMMARY).id() : null);
 		m.put("elapsedS", Duration.between(l.startedAt, Instant.now()).toSeconds());
 		m.put("warning", l.warning);
 		m.put("device", l.device);
@@ -555,22 +536,6 @@ public class MeetingService {
 			l.mlMemoryMb = null;
 		}
 		sockets.broadcast(l.meetingId, status(l));
-		boolean due = l.newSegments.get() >= settings.num("summary_every_segments")
-				|| (l.newSegments.get() > 0 && Duration.between(l.lastSummary, Instant.now()).toSeconds() >= settings.num("summary_interval_seconds"));
-		// The running summary is optional and cloud-only (Insights rejects local for it): no GPU contention.
-		if (due && insights.usableNow(Feature.LIVE_SUMMARY) && l.summarizing.compareAndSet(false, true)) {
-			Thread.ofVirtual().start(() -> {
-				try {
-					summarize(l.meetingId, l.conversationId);
-					l.newSegments.set(0);
-					l.lastSummary = Instant.now();
-				} catch (Exception e) {
-					log.warn("event=summary_failed meeting={} reason={}", l.meetingId, e.getMessage());
-				} finally {
-					l.summarizing.set(false);
-				}
-			});
-		}
 	}
 
 	/** ML process memory: resident plus MLX's GPU buffers, active and cached (BUGS.md B-1). */
@@ -594,56 +559,149 @@ public class MeetingService {
 		return "The transcript is " + how + " behind the room." + why + " Nothing is lost: Stop finishes the rest from the saved audio.";
 	}
 
-	/** Rolling summary, topics, decisions, action items and agenda status (PRD §6.5), from the chosen cloud provider. */
-	public void summarize(long meetingId, long conversationId) {
-		ChatClient llm = insights.client(Feature.LIVE_SUMMARY);
-		String model = insights.model(Feature.LIVE_SUMMARY);
-		var meta = db.sql("SELECT pre_context, rolling_summary::text, started_at, audio_mode FROM meeting WHERE id = :id").param("id", meetingId)
-				.query((rs, i) -> new Object[] { rs.getString(1), rs.getString(2), rs.getTimestamp(3).toInstant(), rs.getString(4) }).single();
-		var speakerNames = names.forConversation(conversationId);
-		var segs = db.sql("SELECT start_s, end_s, channel, text, speaker_cluster_id FROM segment WHERE conversation_id = :c ORDER BY start_s")
-				.param("c", conversationId).query((rs, i) -> new Object[] { rs.getDouble(1), rs.getDouble(2), rs.getString(3), rs.getString(4),
-						rs.getObject(5) })
-				.list();
+	// A local model's context; a cloud model reads the whole meeting in one request.
+	private static final int LOCAL_CHARS = 24_000;
+	private static final int CLOUD_CHARS = 400_000;
+
+	/**
+	 * Summary, topics, decisions, action items and agenda status (PRD §6.5), only when the user
+	 * clicks Summarize (owner rule, 2026-10-24: no LLM call without a click, no loop). One request
+	 * with the whole transcript so far. During the meeting the "during a meeting" provider is used
+	 * (never local: the GPU is transcribing); afterwards the "after a meeting" one.
+	 */
+	public Map<String, Object> summarize(long meetingId) {
+		var l = live;
+		boolean isLive = l != null && l.meetingId == meetingId;
+		Feature f = isLive ? Feature.LIVE_SUMMARY : Feature.MEETING_SUMMARY;
+		ChatClient llm = insights.client(f);
+		String model = insights.model(f);
+		boolean cloud = insights.provider(f).cloud();
+		if (!summarizing.add(meetingId)) {
+			throw new IllegalStateException("A summary of this meeting is already being made.");
+		}
+		try {
+			return summarize(meetingId, isLive, llm, model, cloud);
+		} finally {
+			summarizing.remove(meetingId);
+		}
+	}
+
+	record Line(double startS, double endS, String clock, String text) {
+	}
+
+	/** Every line of the meeting, all parts, as the model sees them: "[n] 11:02:15 Name: text". */
+	private List<Line> lines(long meetingId) {
+		return db.sql("""
+				SELECT s.start_s, s.end_s, s.channel, s.text, s.speaker_cluster_id, c.started_at, c.id, m.audio_mode
+				FROM segment s JOIN conversation c ON c.id = s.conversation_id JOIN meeting m ON m.id = c.meeting_id
+				WHERE c.meeting_id = :m ORDER BY c.part, s.start_s""").param("m", meetingId).query((rs, i) -> {
+					Instant start = rs.getTimestamp(6).toInstant();
+					long conv = rs.getLong(7);
+					Object cid = rs.getObject(5);
+					String who = null;
+					if (cid != null) {
+						var sp = names.forConversation(conv).get(((Number) cid).longValue());
+						who = sp == null ? null : sp.name();
+					}
+					if (who == null) {
+						who = SpeakerNames.channelName(rs.getString(3), rs.getString(8));
+					}
+					double st = rs.getDouble(1);
+					String clock = start.plusMillis(Math.round(st * 1000)).atZone(ZoneId.systemDefault()).format(HMS);
+					return new Line(st, rs.getDouble(2), clock, clock + " " + who + ": " + rs.getString(4));
+				}).list();
+	}
+
+	private Map<String, Object> summarize(long meetingId, boolean isLive, ChatClient llm, String model, boolean cloud) {
+		var meta = db.sql("SELECT pre_context FROM meeting WHERE id = :id").param("id", meetingId).query(String.class).optional();
+		var segs = lines(meetingId);
 		if (segs.isEmpty()) {
-			return;
+			throw new IllegalArgumentException("Nothing to summarize yet: the meeting has no transcript.");
 		}
-		int from = Math.max(0, segs.size() - 80);
-		var lines = new StringBuilder();
-		Instant start = (Instant) meta[2];
-		for (int i = from; i < segs.size(); i++) {
-			Object[] s = segs.get(i);
-			lines.append('[').append(i + 1).append("] ").append(start.plusMillis((long) ((double) s[0] * 1000)).atZone(ZoneId.systemDefault()).format(HMS))
-					.append(' ').append(s[4] != null && speakerNames.containsKey(((Number) s[4]).longValue())
-							? speakerNames.get(((Number) s[4]).longValue()).name()
-							: SpeakerNames.channelName((String) s[2], (String) meta[3])).append(": ").append(s[3]).append('\n');
+		var numbered = new StringBuilder();
+		for (int i = 0; i < segs.size(); i++) {
+			numbered.append('[').append(i + 1).append("] ").append(segs.get(i).text()).append('\n');
 		}
-		int part = db.sql("SELECT part FROM conversation WHERE id = :c").param("c", conversationId).query(Integer.class).single();
-		// A resumed meeting carries its earlier parts' summary forward.
-		String previous = (from > 0 || part > 1) && meta[1] != null ? "Summary of the earlier part:\n" + meta[1] + "\n\n" : "";
-		String agenda = meta[0] == null || ((String) meta[0]).isBlank() ? "" : "Agenda / pre-meeting notes:\n" + truncate((String) meta[0], 2000) + "\n\n";
-		String prompt = previous + agenda + "Transcript so far:\n" + lines + """
+		String transcriptText = numbered.toString();
+		boolean condensed = transcriptText.length() > (cloud ? CLOUD_CHARS : LOCAL_CHARS);
+		if (condensed) {
+			// Too long for the model in one go: notes per part, then the summary from the notes (no line citations).
+			var notes = new StringBuilder();
+			var chunk = new StringBuilder();
+			for (Line line : segs) {
+				chunk.append(line.text()).append('\n');
+				if (chunk.length() >= LOCAL_CHARS / 2) {
+					notes.append(note(llm, model, chunk.toString())).append('\n');
+					chunk.setLength(0);
+				}
+			}
+			if (!chunk.isEmpty()) {
+				notes.append(note(llm, model, chunk.toString()));
+			}
+			transcriptText = "(condensed notes of a long meeting, in order)\n" + notes;
+		}
+		String pre = meta.orElse(null);
+		String agenda = pre == null || pre.isBlank() ? "" : "Agenda / pre-meeting notes:\n" + truncate(pre, 2000) + "\n\n";
+		String prompt = agenda + (isLive ? "Transcript so far" : "Transcript") + ":\n" + transcriptText + """
 
 				Return JSON only:
-				{"summary": ["3-6 bullets of the meeting so far"], "topics": ["topics covered"],
+				{"summary": ["3-8 bullets of the meeting"], "topics": ["topics covered"],
 				 "decisions": [{"text": "...", "refs": [line numbers]}],
 				 "action_items": [{"text": "...", "owner": "Me, Others or a name, or null", "refs": [line numbers]}]%s}
 				Only include what is in the transcript.""".formatted(agenda.isEmpty() ? ""
 						: ",\n \"agenda\": [{\"item\": \"agenda item\", \"state\": \"covered | partly | open\"}]");
-		JsonNode out = llm.parseJson(llm.chat(model, List.of(Message.system("You keep running meeting notes as JSON."), Message.user(prompt)), true));
+		JsonNode out = llm.parseJson(llm.chat(model, List.of(Message.system("You write concise meeting notes as JSON. Never invent facts."),
+				Message.user(prompt)), true));
+		List<Line> cite = condensed ? List.of() : segs;
 		var result = new LinkedHashMap<String, Object>();
 		result.put("summary", texts(out.path("summary")));
 		result.put("topics", texts(out.path("topics")));
-		result.put("decisions", withRefs(out.path("decisions"), segs, start));
-		result.put("action_items", withRefs(out.path("action_items"), segs, start));
+		result.put("decisions", withRefs(out.path("decisions"), cite));
+		result.put("action_items", withRefs(out.path("action_items"), cite));
 		var agendaOut = new ArrayList<Map<String, String>>();
 		out.path("agenda").forEach(a -> agendaOut.add(Map.of("item", a.path("item").asString(""), "state", a.path("state").asString("open"))));
 		result.put("agenda", agendaOut);
 		result.put("updatedAt", Instant.now().toString());
+		result.put("by", llm.name() + " · " + model);
+		result.put("lines", segs.size());
 		db.sql("UPDATE meeting SET rolling_summary = CAST(:s AS jsonb), summary_at = now() WHERE id = :id")
 				.param("s", json.writeValueAsString(result)).param("id", meetingId).update();
 		sockets.broadcast(meetingId, Map.of("type", "summary", "summary", result));
-		log.info("event=meeting_summarized meeting={} segments={}", meetingId, segs.size());
+		if (!isLive) {
+			// A finished meeting: the daily notes show it now (a live one gets it at Stop).
+			db.sql("SELECT id FROM conversation WHERE meeting_id = :m ORDER BY part DESC LIMIT 1").param("m", meetingId).query(Long.class).optional()
+					.ifPresent(conv -> {
+						db.sql("UPDATE conversation SET summary = CAST(:s AS jsonb), topics = CAST(:t AS jsonb) WHERE id = :id")
+								.param("s", json.writeValueAsString(Map.of("bullets", result.get("summary"), "by", result.get("by"), "at", result.get("updatedAt"))))
+								.param("t", json.writeValueAsString(result.get("topics"))).param("id", conv).update();
+						db.sql("DELETE FROM action_item WHERE conversation_id = :c").param("c", conv).update();
+						for (JsonNode a : out.path("action_items")) {
+							String text = a.isString() ? a.asString() : a.path("text").asString("");
+							if (!text.isBlank()) {
+								String owner = a.path("owner").isString() ? a.path("owner").asString() + ": " : "";
+								db.sql("INSERT INTO action_item (conversation_id, text) VALUES (:c, :t)").param("c", conv).param("t", owner + text).update();
+							}
+						}
+						db.sql("SELECT local_date FROM conversation WHERE id = :id").param("id", conv).query(java.time.LocalDate.class).optional()
+								.ifPresent(exporter::exportDay);
+					});
+		}
+		log.info("event=meeting_summarized meeting={} lines={} provider={} model={} condensed={} chars={}", meetingId, segs.size(), llm.name(), model,
+				condensed, transcriptText.length());
+		return result;
+	}
+
+	private static String note(ChatClient llm, String model, String part) {
+		return llm.chat(model, List.of(Message.system("You take terse factual notes."),
+				Message.user("Write up to 8 terse bullet notes (decisions, promises, facts) of this part of a meeting. Keep speaker names.\n\n" + part)),
+				false);
+	}
+
+	/** What a click on Summarize would send: lines and a rough token count (about 4 characters a token). */
+	public Map<String, Object> summaryEstimate(long meetingId) {
+		var segs = lines(meetingId);
+		long chars = segs.stream().mapToLong(x -> x.text().length() + 8).sum() + 1200;
+		return Map.of("lines", segs.size(), "tokens", Math.round(chars / 4.0));
 	}
 
 	private static String truncate(String s, int n) {
@@ -656,16 +714,15 @@ public class MeetingService {
 		return out;
 	}
 
-	private static List<Map<String, Object>> withRefs(JsonNode arr, List<Object[]> segs, Instant start) {
+	private static List<Map<String, Object>> withRefs(JsonNode arr, List<Line> segs) {
 		var out = new ArrayList<Map<String, Object>>();
 		arr.forEach(x -> {
 			var cites = new ArrayList<Map<String, Object>>();
 			x.path("refs").forEach(r -> {
 				int n = r.asInt();
 				if (n >= 1 && n <= segs.size()) {
-					Object[] s = segs.get(n - 1);
-					cites.add(Map.of("startS", s[0], "endS", s[1],
-							"clock", start.plusMillis((long) ((double) s[0] * 1000)).atZone(ZoneId.systemDefault()).format(HMS)));
+					Line s = segs.get(n - 1);
+					cites.add(Map.of("startS", s.startS(), "endS", s.endS(), "clock", s.clock()));
 				}
 			});
 			var m = new LinkedHashMap<String, Object>();
@@ -678,6 +735,7 @@ public class MeetingService {
 		});
 		return out;
 	}
+
 
 	public synchronized Map<String, Object> stop(long meetingId) {
 		var l = live;

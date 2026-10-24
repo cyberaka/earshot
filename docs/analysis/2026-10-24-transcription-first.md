@@ -140,3 +140,4 @@ The ML sidecar (`ml/`) has no LLM code. The LLM code in the service is about 1,0
 | D-7 | Stop while behind | **Finish from saved audio.** Stop returns at once; the untranscribed tail is transcribed from disk in the background, with "catching up: N min left" on the meeting page. |
 | D-8 | Always on | **launchd agent with KeepAlive**: starts at login and restarts if it stops. |
 | D-9 | Build order | **Live path first**, then the 60-min measurement, then the Insights layer, then native Postgres. |
+| D-10 | When AI runs (owner rule, evening) | **Only on the user's click.** No timer, no loop, nothing after Stop or an import. A local call costs GPU, a cloud call costs money. Each button shows lines, ~tokens and provider before the click; a cloud summary is one request with the whole transcript. Enforced by `ClickOnlyTest`. |

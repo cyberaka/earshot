@@ -98,8 +98,12 @@ export interface MeetingSummary {
   decisions: { text: string; owner?: string; citations: { startS: number; endS: number; clock: string }[] }[]
   action_items: { text: string; owner?: string; citations: { startS: number; endS: number; clock: string }[] }[]
   agenda: { item: string; state: string }[]
-  updatedAt: string
+  updatedAt: string; by?: string; lines?: number
 }
+
+/** What one click on Summarize would send: lines and a rough token count. */
+export interface SummaryEstimate { lines: number; tokens: number }
+export interface IndexStatus { provider: Provider; model?: string; missing: number; tokens?: number; embedded?: number }
 
 export interface MeetingView {
   id: number; title: string; audio_mode: string; started_at: string; ended_at: string | null; status: string
@@ -143,8 +147,8 @@ export const api = {
   editNote: (id: number, text: string) => send('PATCH', `/api/notes/${id}`, { text }),
   deleteNote: (id: number) => send('DELETE', `/api/notes/${id}`),
 
-  search: (q: string, from?: string, to?: string) =>
-    get<{ transcript: SearchHit[]; notes: NoteHit[] }>(`/api/search?q=${encodeURIComponent(q)}${from ? `&from=${from}` : ''}${to ? `&to=${to}` : ''}`),
+  search: (q: string, meaning = false) =>
+    get<{ transcript: SearchHit[]; notes: NoteHit[] }>(`/api/search?q=${encodeURIComponent(q)}${meaning ? '&meaning=true' : ''}`),
 
   people: () => get<{ people: Person[]; unknowns: Unknown[] }>('/api/people'),
   assignCluster: (id: number, body: { personId?: number | null; name?: string; me?: boolean; addToLibrary: boolean }) =>
@@ -193,6 +197,12 @@ export const api = {
     fd.append('file', file)
     return fetch('/api/meetings/context', { method: 'POST', body: fd }).then(r => json<{ text: string }>(r))
   },
+  meetingSummaryEstimate: (id: number) => get<SummaryEstimate>(`/api/meetings/${id}/summary`),
+  summarizeMeeting: (id: number) => send<MeetingSummary>('POST', `/api/meetings/${id}/summary`),
+  conversationSummaryEstimate: (id: number) => get<SummaryEstimate>(`/api/conversations/${id}/summary`),
+  summarizeConversation: (id: number) => send<{ ok: boolean }>('POST', `/api/conversations/${id}/summary`),
+  indexStatus: () => get<IndexStatus>('/api/search/index'),
+  buildIndex: () => send<{ embedded: number }>('POST', '/api/search/index'),
   switchMeetingVocabulary: (id: number, vocabulary: string) => send<{ vocabulary: string }>('POST', `/api/meetings/${id}/vocabulary`, { vocabulary }),
   addAttachment: (meetingId: number, file: File, caption?: string) => {
     const fd = new FormData()

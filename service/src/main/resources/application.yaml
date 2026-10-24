@@ -56,7 +56,8 @@ earshot:
 
   # Defaults for runtime settings; the Settings screen overrides them via the setting table.
   defaults:
-    # Optional AI insights (owner decision 2026-10-24): each feature is off, local, openai or anthropic.
+    # Optional AI insights (owner decision 2026-10-24): each feature is off, local, openai or anthropic,
+    # and runs only when the user clicks its button: no loop, nothing automatic.
     # Keys come only from the environment or .env: OPENAI_API_KEY, ANTHROPIC_API_KEY.
     insights_live_summary: "off"        # off, openai or anthropic (never local: it would share the GPU with live transcription)
     insights_meeting_summary: "off"
@@ -79,8 +80,6 @@ earshot:
     person_threshold: 0.6
     me_min_speech_seconds: 10
     diarization_threshold: 0.68
-    summary_interval_seconds: 120
-    summary_every_segments: 8
     qa_prompt_max_tokens: 3000
     live_max_segment_seconds: 15
     live_lag_warn_seconds: 60          # a banner when the transcript is this far behind the room

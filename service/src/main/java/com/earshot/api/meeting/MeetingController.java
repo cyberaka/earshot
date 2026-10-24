@@ -92,6 +92,18 @@ public class MeetingController {
 		return meetings.view(id);
 	}
 
+	/** What a click on Summarize would send (no model call). */
+	@GetMapping("/{id}/summary")
+	public Map<String, Object> summaryEstimate(@PathVariable long id) {
+		return meetings.summaryEstimate(id);
+	}
+
+	/** The user clicked Summarize: one model call (owner rule, 2026-10-24). */
+	@PostMapping("/{id}/summary")
+	public Map<String, Object> summarize(@PathVariable long id) {
+		return meetings.summarize(id);
+	}
+
 	/** Pre-meeting context from an uploaded .md, .txt or .pdf (B-6). */
 	@PostMapping("/context")
 	public Map<String, Object> context(@RequestParam("file") MultipartFile file) throws IOException {

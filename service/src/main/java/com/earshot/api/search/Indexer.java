@@ -1,6 +1,7 @@
 package com.earshot.api.search;
 
 import java.util.List;
+import java.util.Map;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
@@ -10,8 +11,8 @@ import com.earshot.api.llm.Insights.Feature;
 import com.earshot.api.speaker.Vectors;
 
 /**
- * Embeds segments for semantic search (PRD §5.2 step 11), when that optional feature is on.
- * Keyword search needs none of this: full text is a generated column.
+ * Embeds segments for semantic search (PRD §5.2 step 11), only when the user clicks "Prepare search
+ * by meaning" (owner rule, 2026-10-24). Keyword search needs none of this: full text is a generated column.
  */
 @Service
 public class Indexer {
@@ -35,32 +36,39 @@ public class Indexer {
 		return "search_query: " + text;
 	}
 
-	/**
-	 * Embeds what isn't yet; does nothing while semantic search is off, or local during a live
-	 * meeting. A provider failure is logged and skipped: keyword search works without vectors.
-	 */
-	public int indexConversation(long conversationId) {
-		try {
-			return embedMissing(conversationId);
-		} catch (com.earshot.api.llm.LlmClient.LlmUnavailable e) {
-			log.warn("event=index_skipped conversation={} reason={}", conversationId, e.getMessage());
-			return 0;
+	/** Lines that have no vector for the chosen model yet, and how many characters they hold. */
+	public Map<String, Object> status() {
+		var out = new java.util.LinkedHashMap<String, Object>();
+		out.put("provider", insights.provider(Feature.SEMANTIC_SEARCH).id());
+		if (!insights.enabled(Feature.SEMANTIC_SEARCH)) {
+			out.put("missing", 0);
+			return out;
 		}
+		String model = model();
+		var row = db.sql("""
+				SELECT count(*), COALESCE(sum(length(s.text)), 0) FROM segment s
+				WHERE NOT EXISTS (SELECT 1 FROM segment_vec v WHERE v.segment_id = s.id AND v.model = :m)""").param("m", model)
+				.query((rs, i) -> new long[] { rs.getLong(1), rs.getLong(2) }).single();
+		out.put("model", model);
+		out.put("missing", row[0]);
+		out.put("tokens", Math.round(row[1] / 4.0));
+		out.put("embedded", db.sql("SELECT count(*) FROM segment_vec WHERE model = :m").param("m", model).query(Long.class).single());
+		return out;
 	}
 
-	private int embedMissing(long conversationId) {
-		if (!insights.usableNow(Feature.SEMANTIC_SEARCH)) {
-			return 0;
-		}
-		String model = insights.model(Feature.SEMANTIC_SEARCH);
+	/** Every line not yet embedded, in batches; throws when off, or local during a live meeting. */
+	public int indexAll() {
+		insights.client(Feature.SEMANTIC_SEARCH);
+		String model = model();
 		int done = 0;
 		while (true) {
 			var rows = db.sql("""
 					SELECT s.id, s.text FROM segment s
-					WHERE s.conversation_id = :c AND NOT EXISTS (SELECT 1 FROM segment_vec v WHERE v.segment_id = s.id AND v.model = :m)
-					ORDER BY s.id LIMIT :n""").param("c", conversationId).param("m", model).param("n", BATCH)
+					WHERE NOT EXISTS (SELECT 1 FROM segment_vec v WHERE v.segment_id = s.id AND v.model = :m)
+					ORDER BY s.id LIMIT :n""").param("m", model).param("n", BATCH)
 					.query((rs, i) -> new Object[] { rs.getLong(1), rs.getString(2) }).list();
 			if (rows.isEmpty()) {
+				log.info("event=index_done embedded={} model={}", done, model);
 				return done;
 			}
 			index(rows.stream().map(r -> (Long) r[0]).toList(), rows.stream().map(r -> document((String) r[1])).toList(), model);
@@ -76,10 +84,6 @@ public class Indexer {
 					ON CONFLICT (segment_id, model) DO UPDATE SET embedding = EXCLUDED.embedding""")
 					.param("s", segmentIds.get(i)).param("m", model).param("v", Vectors.literal(vecs[i])).update();
 		}
-	}
-
-	public boolean semanticReady() {
-		return insights.usableNow(Feature.SEMANTIC_SEARCH);
 	}
 
 	public String model() {

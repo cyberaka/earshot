@@ -20,8 +20,6 @@ import com.earshot.api.job.JobWorker;
 import com.earshot.api.job.Jobs;
 import com.earshot.api.ml.MlClient;
 import com.earshot.api.pipeline.Aligner;
-import com.earshot.api.pipeline.Enricher;
-import com.earshot.api.search.Indexer;
 import com.earshot.api.settings.Settings;
 import com.earshot.api.speaker.PeopleService;
 import com.earshot.api.speaker.SpeakerMatcher;
@@ -45,16 +43,14 @@ public class PostMeetingJob implements JobWorker.Handler {
 	private final Settings settings;
 	private final SpeakerMatcher matcher;
 	private final PeopleService people;
-	private final Enricher enricher;
-	private final Indexer indexer;
 	private final MarkdownExporter exporter;
 	private final JsonMapper json;
 	private final LiveTranscript transcript;
 	private final com.earshot.api.settings.Vocabulary vocabulary;
 	private final Path work;
 
-	public PostMeetingJob(JdbcClient db, MlClient ml, Settings settings, SpeakerMatcher matcher, PeopleService people, Enricher enricher,
-			Indexer indexer, MarkdownExporter exporter, JsonMapper json, LiveTranscript transcript, com.earshot.api.settings.Vocabulary vocabulary,
+	public PostMeetingJob(JdbcClient db, MlClient ml, Settings settings, SpeakerMatcher matcher, PeopleService people,
+			MarkdownExporter exporter, JsonMapper json, LiveTranscript transcript, com.earshot.api.settings.Vocabulary vocabulary,
 			EarshotProperties props) {
 		this.vocabulary = vocabulary;
 		this.db = db;
@@ -62,8 +58,6 @@ public class PostMeetingJob implements JobWorker.Handler {
 		this.settings = settings;
 		this.matcher = matcher;
 		this.people = people;
-		this.enricher = enricher;
-		this.indexer = indexer;
 		this.exporter = exporter;
 		this.json = json;
 		this.transcript = transcript;
@@ -131,8 +125,7 @@ public class PostMeetingJob implements JobWorker.Handler {
 		}
 		if ("transcribed".equals(stage)) {
 			worker.checkpoint();
-			jobs(job, "enrich");
-			enricher.enrich(convId);
+			// No summary here: it is made only when the user clicks Summarize (owner rule, 2026-10-24).
 			if (m[2] != null && !"Meeting".equals(m[2])) {
 				// The user's own title wins over the generated one.
 				db.sql("UPDATE conversation SET title = :t WHERE id = :id").param("t", m[2]).param("id", convId).update();
@@ -141,8 +134,6 @@ public class PostMeetingJob implements JobWorker.Handler {
 			stage = "enriched";
 		}
 		if ("enriched".equals(stage)) {
-			jobs(job, "index");
-			indexer.indexConversation(convId);
 			db.sql("UPDATE conversation SET stage = 'exported', status = 'done' WHERE id = :id").param("id", convId).update();
 		}
 		// Recorder conversations that overlap this meeting are now duplicates of it (A-13).
@@ -162,7 +153,7 @@ public class PostMeetingJob implements JobWorker.Handler {
 
 	/**
 	 * The default after Stop (owner decision, 2026-10-19: no slow re-run): the live transcript is
-	 * final, the rolling summary becomes the meeting's summary, and only playback audio, the last
+	 * final, a summary the user asked for becomes the meeting's summary, and only playback audio, the last
 	 * index entries and the export are made. Takes seconds.
 	 */
 	private void finishFromLive(Jobs.Job job, JobWorker worker, long meetingId, long convId, long recId, String mode, JsonNode files,
@@ -213,11 +204,7 @@ public class PostMeetingJob implements JobWorker.Handler {
 					db.sql("INSERT INTO action_item (conversation_id, text) VALUES (:c, :t)").param("c", convId).param("t", owner + text).update();
 				}
 			}
-		} else {
-			// Too short for a rolling summary: one quick enrichment call.
-			enricher.enrich(convId);
 		}
-		indexer.indexConversation(convId);
 		db.sql("UPDATE conversation SET stage = 'exported', status = 'done' WHERE id = :id").param("id", convId).update();
 		try {
 			// Lines moved by hand during the meeting: voices from the final lines, now that the audio is joined.

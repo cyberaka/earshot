@@ -2,7 +2,7 @@
 
 **Working name:** Earshot
 **Owner:** Abhinav
-**Status:** Draft v7 (r13, 2026-10-24: transcription first, AI insights optional; after the first real live call)
+**Status:** Draft v7 (r14, 2026-10-24: AI insights run only on the user's click; r13: transcription first, AI insights optional)
 **Date:** 2026-10-19, revised 2026-10-24
 **Build approach:** Implemented with Claude Code, milestone by milestone (see §12). Significant design decisions get a numbered ADR in `docs/adr/` before they are built.
 
@@ -15,7 +15,7 @@ Earshot is a local web app that runs entirely on a laptop. **Its job is transcri
 1. **Daily Notes (batch).** Each evening, audio from a pocket voice recorder is imported. The app transcribes and diarizes it, labels the user's own voice, and produces a searchable, speaker-attributed record of the day's conversations.
 2. **Live Meeting Transcription.** During a meeting (in-person or online), the app listens and transcribes in near real time, with speakers separated and named. The transcript is also written to a plain file as it happens, so any agent the user chooses (for example Claude Code) can read it during the meeting and answer questions or suggest what to ask.
 
-What happens with the transcript, during the meeting and after it, is the user's choice. Earshot can add **optional AI insights** (§6.8): summaries, action items, Q&A and semantic search, each off by default, each with a provider the user picks (a local model, OpenAI or Anthropic). They never come at the cost of transcription: a local model never runs while a meeting is live.
+What happens with the transcript, during the meeting and after it, is the user's choice. Earshot can add **optional AI insights** (§6.8): summaries, action items, Q&A and semantic search, each off by default, each with a provider the user picks (a local model, OpenAI or Anthropic), and each runs **only when the user clicks its button**. They never come at the cost of transcription: a local model never runs while a meeting is live.
 
 Transcription and diarization run offline. No audio ever leaves the machine; transcript text leaves it only for an insight the user has pointed at a cloud provider. The user supplies the Whisper turbo model.
 
@@ -71,7 +71,7 @@ Transcription and diarization run offline. No audio ever leaves the machine; tra
 2. The import screen shows the derived start time of each file (§5.4) and lets the user apply a clock offset to the whole import before processing.
 3. The user clicks **Process**. Optionally, processing can run on a schedule (Phase 2).
 4. The app processes the files in the background, with per-stage progress shown in the UI.
-5. The user opens **Today**. It shows a timeline of conversations, each with speaker-attributed transcript (plus summary and action items when the optional meeting summary is on, §6.8). Ambient conversations (§5.2 step 7) are collapsed by default.
+5. The user opens **Today**. It shows a timeline of conversations, each with speaker-attributed transcript (plus summary and action items when the user has clicked Summarize, §6.8). Ambient conversations (§5.2 step 7) are collapsed by default.
 6. The user names unknown speakers ("Speaker 3 → Ravi"). The name appears everywhere immediately, including summaries and exports (§5.5), and future sessions apply it automatically.
 
 ### 5.2 Processing pipeline
@@ -93,7 +93,7 @@ Transcription and diarization run offline. No audio ever leaves the machine; tra
    - A wrongly-ambient conversation is a silently lost note, so the ambient test errs toward transcribing: it uses a lower threshold (`me_ambient_threshold`, below `me_threshold`). The Today view shows ambient rows with their duration, and re-matching (A-12) transcribes any conversation that stops being ambient.
 8. **ASR (per non-ambient conversation):** Whisper turbo with word timestamps, restricted to VAD speech regions. Discard segments that look hallucinated: `no_speech_prob` above threshold with low average log-probability, or compression ratio above threshold (all configurable).
 9. **Word to speaker alignment:** assign each word to the speaker turn with maximum time overlap. Merge turns shorter than 1 s into the adjacent turn when the speaker is ambiguous.
-10. **Enrichment (optional, §6.8; non-ambient conversations only):** when the meeting summary is on, generate a title, a 3–5 bullet summary, action items with owners, and topics or tags. Speakers are referred to by stable tokens, never by display names (§5.5). A provider failure skips this step; the transcript is complete without it.
+10. **Enrichment (optional, §6.8; on the user's click only, never part of the pipeline):** Summarize on a conversation generates a title, a 3–5 bullet summary, action items with owners, and topics or tags. Speakers are referred to by stable tokens, never by display names (§5.5). A provider failure skips this step; the transcript is complete without it.
 11. **Index:** the full-text index always (a generated column); embeddings for semantic search only when that option is on (§5.6).
 12. **Export:** write `data/notes/YYYY-MM-DD.md`, a human-readable daily file (format in §9.3). Ambient conversations and recorder conversations linked to a meeting (A-13) are left out; meetings are included.
 
@@ -142,7 +142,7 @@ The user names speakers after enrichment has run, and later renames, merges, or 
 ### 6.1 User flow
 1. The user clicks **Start Meeting**, picks an audio source (§6.2), and optionally adds a title (and, when an AI insight that uses it is on, pre-meeting context such as an agenda or notes, pasted or uploaded as `.md`/`.txt`/`.pdf`).
 2. A live transcript scrolls in the main panel, with speakers separated and nameable; the user's notes sit beside it. The transcript is also written to `data/live/current.md` within about a second of each line (§6.4), for any agent the user runs.
-3. With the optional live summary on (§6.8), a side panel shows the **running summary** and **topics covered**. With the optional Ask on, the user can type a question or click a quick action anytime:
+3. With the optional summary on (§6.8), a side panel has a **Summarize** button: each click makes one summary of the meeting so far, with **topics covered**. With the optional Ask on, the user can type a question or click a quick action anytime:
    - **"Was X discussed?"**
    - **"Suggest a question I could ask"**
    - **"Summarize the last 5 minutes"**
@@ -181,15 +181,15 @@ The user names speakers after enrichment has run, and later renames, merges, or 
 - The status bar shows transcription speed (over the last minute), the speech engine's memory (resident plus GPU buffers) and the transcript file.
 
 ### 6.5 Context building (optional insights only)
-Only when the live summary or Ask is on (§6.8). These components are then maintained continuously:
+Only for Summarize and Ask clicks (§6.8). Nothing here calls a model on its own:
 
 | Component | Update cadence | Purpose |
 |---|---|---|
 | Raw transcript | Per segment | Source of truth, citations |
-| Search index (full text; vectors when semantic search is on and its provider may run live) | Per segment | Recall questions ("was X discussed?") |
-| Rolling summary | Every `summary_interval` (default 3 min) or N new segments, from a cloud provider only (§6.8) | Compact meeting state that fits the LLM context |
-| Topic list | With each summary update | "Topics covered" panel, agenda tracking |
-| Decisions & action items | With each summary update; each item stores the offsets of the segments it came from | Quick action answers, cited by those offsets |
+| Search index (full text; vectors only when the user clicks "Prepare … for meaning search") | Per segment (full text) | Recall questions ("was X discussed?") |
+| Meeting summary | Only when the user clicks Summarize: one request with the whole transcript so far (cloud only during a meeting, §6.8) | Compact meeting state that fits the LLM context |
+| Topic list | With each Summarize click | "Topics covered" panel, agenda tracking |
+| Decisions & action items | With each Summarize click; each item stores the offsets of the segments it came from | Quick action answers, cited by those offsets |
 | Pre-meeting context | Once at start | Agenda coverage, question suggestions |
 
 **Q&A prompt assembly**, capped at `qa_prompt_max_tokens` (default 3000), trimmed in this order (last item trimmed first):
@@ -209,7 +209,7 @@ Only when the live summary or Ask is on (§6.8). These components are then maint
 - the ML process drops its queue at once (lines made after Stop would have nowhere to go, and would hold the GPU);
 - **nothing is lost (owner decision D-7, 2026-10-24):** for each channel, the audio after its last line is transcribed from the saved file, and the lines go to the voices already heard in the meeting (voice similarity ≥ 0.5) or to new speakers. The meeting page says "Catching up" with how much is left. (r13: before this, Stop while lagging silently dropped the backlog, 18 minutes of one class.) Without a backlog this takes seconds;
 - the live transcript plus the caught-up lines become the final transcript;
-- the rolling summary, if there is one, becomes the meeting's summary; otherwise the optional meeting summary (§6.8) runs, if on;
+- a summary the user made during the meeting, if any, becomes the meeting's summary; no model runs at Stop (the user can click Summarize afterwards, §6.8);
 - the per-channel audio is joined for playback, the day's markdown is exported and the transcript file is rewritten as stopped.
 
 A full re-run (re-transcribe and re-diarize each channel, as Mode A steps 6–11) remains available as an explicit job (`post_meeting_full`) and is never started automatically.
@@ -227,7 +227,7 @@ A full re-run (re-transcribe and re-diarize each channel, as Mode A steps 6–11
 ### 6.7 Functional requirements
 - B-1: Start or stop a meeting, and pick the audio source and devices.
 - B-2: Live transcript with no more than 10 s lag under normal load.
-- B-3: Optional (§6.8): rolling summary and topic panel, updating automatically.
+- B-3: Optional (§6.8): summary and topic panel, made when the user clicks Summarize (never automatically).
 - B-4: Optional (§6.8): free-text Q&A plus the quick-action buttons listed in §6.1.
 - B-5: Optional (§6.8): streaming answers with clickable timestamp citations that scroll the transcript to the cited spot.
 - B-6: Optional pre-meeting context upload (only shown when an insight uses it).
@@ -252,17 +252,19 @@ The slide on screen at a moment of the meeting belongs next to what was said the
 ### 6.8 Optional AI insights (owner decision, 2026-10-24)
 Earshot's core is transcription and diarization; it must work fully with every insight off, which is the default. Each insight has its own provider, chosen in Settings → Insights:
 
-| Insight | What | Providers |
+| Insight | Runs when the user clicks | Providers |
 |---|---|---|
-| Live summary | Running summary, topics, decisions, agenda during a meeting (§6.5) | Off · OpenAI · Anthropic (never local: it would share the GPU with live transcription) |
-| Meeting summary | Title, summary, topics, action items after Stop and for imports (§5.2 step 10) | Off · Local · OpenAI · Anthropic |
-| Ask | Q&A per meeting, day or range; quick actions (§6.1, A-9) | Off · Local · OpenAI · Anthropic |
-| Semantic search | Embeddings for meaning-based ranking (§5.6) | Off · Local · OpenAI (Anthropic has no embeddings) |
+| Summary during a meeting | Summarize on the live meeting: summary, topics, decisions, agenda so far (§6.5) | Off · OpenAI · Anthropic (never local: it would share the GPU with live transcription) |
+| Summary after a meeting | Summarize on a finished meeting or a daily-notes conversation: summary, topics, action items (§5.2 step 10) | Off · Local · OpenAI · Anthropic |
+| Ask | Each question or quick action: one answer (§6.1, A-9) | Off · Local · OpenAI · Anthropic |
+| Search by meaning | "Prepare … for meaning search" embeds new lines; the "by meaning" tick adds one call per search (§5.6) | Off · Local · OpenAI (Anthropic has no embeddings) |
 
+- **Click only (owner rule D-10, 2026-10-24):** no insight ever runs on its own: no timer, no loop, nothing after Stop or an import. A local call costs GPU time, a cloud call costs money, so every call is the user's click. Choosing a provider in Settings only shows the buttons. Before a click, the button shows what it would send (lines, about how many tokens, to which provider).
+- **One click, one request** to a cloud provider: the whole transcript goes in one request (up to ~100k tokens), not in pieces. A local model, with a smaller context, condenses long transcripts in parts.
 - **Providers:** local = an OpenAI-compatible server (LM Studio, Ollama); OpenAI and Anthropic through their APIs. Model names are settings per provider.
-- **A local model never competes with live transcription (D-2):** while a meeting is live, local work waits until Stop: Ask says so, indexing and summaries are deferred. Cloud providers use no local GPU and may run live.
+- **A local model never competes with live transcription (D-2):** while a meeting is live, a click that would use the local model is refused with a reason ("after Stop"). Cloud providers use no local GPU and may run live.
 - **One request at a time per provider.** None blocks a transcription thread.
-- **A provider failure never fails a meeting, import or export:** the summary or vectors are skipped and logged; the transcript is complete.
+- **A provider failure never touches the transcript:** the click shows the provider's error; meetings, imports and exports never depend on a model.
 - **Privacy:** with a cloud provider on, transcript text (never audio) goes to that company. Settings says so next to each such insight, and the header shows "Insights: OpenAI" (or Anthropic) while any is on.
 - **Keys (D-3):** `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` from the environment or `.env`, read at start; never stored in the database, shown, logged or exported. Settings shows only whether a key is set. `OPENAI_BASE_URL` and `ANTHROPIC_BASE_URL` override the endpoints.
 - Without the insights, the meeting page shows transcript, speakers and notes; Today and Search show no Ask; existing summaries stay visible.

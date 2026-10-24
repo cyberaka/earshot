@@ -88,7 +88,13 @@ public class SearchService {
 		return spec.query(Long.class).list();
 	}
 
+	/** Keyword search: no model call. */
 	public List<Hit> search(String query, Scope scope, int limit) {
+		return search(query, scope, limit, false);
+	}
+
+	/** With {@code byMeaning}, one embedding call for the query (the user ticked "by meaning"). */
+	public List<Hit> search(String query, Scope scope, int limit, boolean byMeaning) {
 		var lists = new ArrayList<List<Long>>();
 		var terms = terms(query);
 		var base = new HashMap<String, Object>();
@@ -121,8 +127,8 @@ public class SearchService {
 						ORDER BY ts_rank(s.tsv, to_tsquery('simple', :q)) DESC, s.start_s DESC LIMIT :n""", sp));
 			}
 		}
-		// Meaning-based ranking only when the optional semantic search is on (and usable now).
-		if (indexer.semanticReady()) {
+		// Meaning-based ranking only when the user asks for it on this search (owner rule, 2026-10-24).
+		if (byMeaning) {
 			try {
 				float[] qv = indexer.embedQuery(query);
 				var v = new HashMap<>(base);
@@ -133,8 +139,9 @@ public class SearchService {
 						SELECT s.id FROM segment_vec sv JOIN segment s ON s.id = sv.segment_id JOIN conversation c ON c.id = s.conversation_id
 						WHERE sv.model = :m%s ORDER BY (sv.embedding::vector(%d)) <=> CAST(:v AS vector(%d)) LIMIT :n"""
 						.formatted(where, qv.length, qv.length), v));
-			} catch (LlmClient.LlmUnavailable | com.earshot.api.llm.Insights.HeldForLive e) {
+			} catch (LlmClient.LlmUnavailable e) {
 				log.warn("event=semantic_search_skipped reason={}", e.getMessage());
+				throw e;
 			}
 		}
 		Map<Long, Double> score = new LinkedHashMap<>();

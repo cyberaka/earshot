@@ -21,8 +21,9 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * The optional AI layer (owner decision, 2026-10-24). Earshot's job is transcription and
  * diarization; summaries, Q&A and semantic search are extras, each off unless the user picks a
- * provider for it: a local server, OpenAI or Anthropic. A local model shares the GPU with
- * Whisper, so it never runs while a meeting is live; cloud providers may.
+ * provider for it: a local server, OpenAI or Anthropic. Each runs only when the user clicks its
+ * button, never on a timer or after a job (owner rule, 2026-10-24): a local call costs GPU, a cloud
+ * call costs money. A local model shares the GPU with Whisper, so it never runs while a meeting is live.
  */
 @Service
 public class Insights {
@@ -30,7 +31,7 @@ public class Insights {
 	private static final Logger log = LoggerFactory.getLogger(Insights.class);
 
 	public enum Feature {
-		LIVE_SUMMARY("live_summary", "Live summary"), MEETING_SUMMARY("meeting_summary", "Meeting summary"), ASK("ask", "Ask"),
+		LIVE_SUMMARY("live_summary", "Summary during a meeting"), MEETING_SUMMARY("meeting_summary", "Summary after a meeting"), ASK("ask", "Ask"),
 		SEMANTIC_SEARCH("semantic_search", "Semantic search");
 
 		final String key;
@@ -161,7 +162,7 @@ public class Insights {
 				throw new IllegalArgumentException(f.label() + ": choose off, local, openai or anthropic.");
 			}
 			if (f == Feature.LIVE_SUMMARY && p == Provider.LOCAL) {
-				throw new IllegalArgumentException("The live summary can't use the local model: it would compete with live transcription for the GPU.");
+				throw new IllegalArgumentException("A summary during a meeting can't use the local model: it would compete with live transcription for the GPU.");
 			}
 			if (f == Feature.SEMANTIC_SEARCH && p == Provider.ANTHROPIC) {
 				throw new IllegalArgumentException("Anthropic has no embeddings API: choose local or openai for semantic search.");

@@ -159,6 +159,7 @@ public class LlmClient implements ChatClient {
 				throw new LlmUnavailable("embeddings returned " + res.statusCode() + ": " + res.body(), null);
 			}
 			JsonNode data = json.readTree(res.body()).get("data");
+			log.info("event=llm_embed provider={} model={} texts={}", name, model, texts.size());
 			float[][] out = new float[data.size()][];
 			for (JsonNode d : data) {
 				JsonNode e = d.get("embedding");
@@ -194,6 +195,11 @@ public class LlmClient implements ChatClient {
 		if (a < 0 || b <= a) {
 			throw new IllegalStateException("no JSON in LLM reply: " + reply);
 		}
-		return json.readTree(reply.substring(a, b + 1));
+		try {
+			return json.readTree(reply.substring(a, b + 1));
+		} catch (tools.jackson.core.JacksonException e) {
+			log.warn("event=llm_bad_json provider={} reply_start={}", name(), reply.substring(0, Math.min(reply.length(), 600)).replace('\n', ' '));
+			throw new IllegalStateException("The model's reply was not valid JSON, so nothing was saved. Click again to retry.");
+		}
 	}
 }
