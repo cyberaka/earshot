@@ -6,6 +6,7 @@ For the post-call huddle on 2026-10-24, start with **[Huddle summary](#huddle-su
 
 | # | Bug | Severity | Status |
 |---|-----|----------|--------|
+| B-17 | Re-transcribe/import lost the instructor's name: a speaker's 14 min embedded in one go gave a broken voice fingerprint (0.04–0.23 against their own voice) | High | **Fixed** 2026-10-25 |
 | B-16 | Short fragments and junk lines ("center." alone; "कि", "soft.", "Bye, tool.") | Low | Open |
 | B-15 | Another student's answer labelled as the user: Earshot matched the group to the user's voice at 0.66 (threshold 0.6); no "by voice" tag shown for Me | Medium | Open |
 | B-14 | Remote speakers merged or switching numbers (a participant's question labelled as the instructor) | **High** | **Fixed** 2026-10-24: setting `live_speaker_threshold` 0.60 (was a fixed 0.68) |
@@ -24,6 +25,14 @@ For the post-call huddle on 2026-10-24, start with **[Huddle summary](#huddle-su
 | B-1 | ML process memory grows without bound; live transcription crawls | High | **Fixed** 2026-10-24: cache capped, memory shown |
 
 ---
+
+## B-17: Re-transcribe lost the instructor's name
+
+- **Seen:** 2026-10-25, Re-transcribe of meeting 35 (29 min of the 24 Oct class, pyannote).
+  - Mukesh Jain's group (838 s) came back unnamed; Hardik, Amit Arora, Bharat, Sushant and Me kept their names.
+  - Its voice fingerprint matched his saved voice at 0.04, against 0.94 for the live groups.
+- **Cause (measured):** `embed_ranges` joined all of a speaker's speech into one embedding call. Against his voiceprint that scored 0.93–0.98 for 40 s to 10 min of joined speech, then 0.23 at 14 min. Any speaker over ~10 min in a batch pass (the instructor, in a class) lost their name, and names could not carry over by voice either.
+- **Fixed (2026-10-25):** long speech is embedded in pieces of at most 5 min and averaged: 0.98 on the same 14 min. Python test `test_long_speech_is_embedded_in_pieces`.
 
 ## B-16: Short fragments and junk lines
 

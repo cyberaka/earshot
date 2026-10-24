@@ -42,12 +42,42 @@ def embed(samples: np.ndarray) -> np.ndarray:
     return vec / (np.linalg.norm(vec) + 1e-9)
 
 
+# One embedding over a very long input breaks down: on the 24 Oct class, Mukesh's 14 minutes joined
+# together scored 0.23 against his own voiceprint (0.93-0.98 for 40 s to 10 min), so a re-transcribed
+# meeting lost the instructor's name. Long speech is embedded in pieces of at most this and averaged.
+MAX_EMBED_S = 300.0
+
+
+def piece_bounds(lengths: list[int], max_samples: int) -> list[tuple[int, int]]:
+    """Groups consecutive parts (by sample count) into pieces of at most max_samples (a longer part is its own piece)."""
+    out, start, size = [], 0, 0
+    for i, n in enumerate(lengths):
+        if size and size + n > max_samples:
+            out.append((start, i))
+            start, size = i, 0
+        size += n
+    if size:
+        out.append((start, len(lengths)))
+    return out
+
+
 def embed_ranges(samples: np.ndarray, ranges: list[tuple[float, float]], offset: float = 0.0) -> np.ndarray:
     parts = [samples[int((s - offset) * SAMPLE_RATE):int((e - offset) * SAMPLE_RATE)] for s, e in ranges]
     parts = [p for p in parts if len(p) > 0]
     if not parts:
         raise ValueError("no audio in the given ranges")
-    return embed(np.concatenate(parts))
+    pieces = piece_bounds([len(p) for p in parts], int(MAX_EMBED_S * SAMPLE_RATE))
+    if len(pieces) == 1:
+        return embed(np.concatenate(parts))
+    vecs, weights = [], []
+    for a, b in pieces:
+        x = np.concatenate(parts[a:b])
+        for i in range(0, len(x), int(MAX_EMBED_S * SAMPLE_RATE)):  # one part longer than a piece
+            chunk = x[i:i + int(MAX_EMBED_S * SAMPLE_RATE)]
+            if len(chunk) >= SAMPLE_RATE:
+                vecs.append(embed(chunk)); weights.append(len(chunk))
+    v = np.average(np.stack(vecs), axis=0, weights=weights)
+    return v / (np.linalg.norm(v) + 1e-9)
 
 
 def _community_pipeline():

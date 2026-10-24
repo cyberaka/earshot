@@ -240,3 +240,12 @@ def test_live_speaker_threshold_reaches_the_diarizer():
             if k in live.SESSIONS:
                 live.stop(k)
                 del live.SESSIONS[k]
+
+
+def test_long_speech_is_embedded_in_pieces():
+    # 14 min joined into one embedding scored 0.23 against the speaker's own voiceprint (24 Oct class).
+    from earshot_ml import speakers
+    sr = 16000
+    assert speakers.piece_bounds([sr * 100] * 9, sr * 300) == [(0, 3), (3, 6), (6, 9)]
+    assert speakers.piece_bounds([sr * 10], sr * 300) == [(0, 1)]
+    assert speakers.piece_bounds([sr * 400, sr * 10], sr * 300) == [(0, 1), (1, 2)]

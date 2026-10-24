@@ -364,19 +364,24 @@ function Retranscribe({ id, minutes, otherLive, onQueued, onError }: {
   if (!armed) return <button type="button" className={ui.btnSmall} onClick={() => setArmed(true)}
     title="A fuller pass over the saved audio: diarization and transcription of whole files, with more context than live">Re-transcribe</button>
   return (
-    <div className={ui.notice} role="dialog" aria-label="Re-transcribe this meeting" style={{ flexBasis: '100%' }}>
-      <b>Re-transcribe from the saved audio?</b> A fuller pass: speakers and words over whole files, with more context than live.
-      It uses the CPU and GPU for roughly {Math.max(1, Math.round(minutes / 2))} min.{' '}
-      {otherLive
-        ? <b style={{ color: 'var(--warn)' }}>A meeting is live now: this starts at once and shares the GPU with it, which may slow its live transcript.</b>
-        : 'If you start a meeting, it stops at once and carries on after that meeting.'}
-      Your current transcript stays until the new one is ready, then is replaced: speaker names carry over by voice, lines you moved by hand are redone.{' '}
-      <button type="button" className={ui.primary} disabled={busy} onClick={async () => {
-        setBusy(true)
-        try { await api.retranscribeMeeting(id); setArmed(false); onQueued() } catch (e) { onError(e instanceof Error ? e.message : String(e)) }
-        setBusy(false)
-      }}>{busy ? 'Queuing…' : 'Re-transcribe now'}</button>{' '}
-      <button type="button" className={ui.btnSmall} onClick={() => setArmed(false)}>Cancel</button>
+    <div className={ui.notice} role="dialog" aria-label="Re-transcribe this meeting"
+      style={{ flexBasis: '100%', display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'flex-start' }}>
+      <div>
+        <b>Re-transcribe from the saved audio?</b> A fuller pass: speakers and words over whole files, with more context than live.
+        It uses the CPU and GPU for roughly {Math.max(1, Math.round(minutes / 2))} min.{' '}
+        {otherLive
+          ? <b style={{ color: 'var(--warn)' }}>A meeting is live now: this starts at once and shares the GPU with it, which may slow its live transcript.</b>
+          : 'If you start a meeting, it stops at once and carries on after that meeting.'}{' '}
+        Your current transcript stays until the new one is ready, then is replaced: speaker names carry over by voice, lines you moved by hand are redone.
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button type="button" className={ui.primary} disabled={busy} onClick={async () => {
+          setBusy(true)
+          try { await api.retranscribeMeeting(id); setArmed(false); onQueued() } catch (e) { onError(e instanceof Error ? e.message : String(e)) }
+          setBusy(false)
+        }}>{busy ? 'Queuing…' : 'Re-transcribe now'}</button>
+        <button type="button" className={ui.btnSmall} onClick={() => setArmed(false)}>Cancel</button>
+      </div>
     </div>
   )
 }
