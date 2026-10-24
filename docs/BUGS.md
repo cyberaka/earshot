@@ -8,7 +8,7 @@ For the post-call huddle on 2026-10-24, start with **[Huddle summary](#huddle-su
 |---|-----|----------|--------|
 | B-16 | Short fragments and junk lines ("center." alone; "कि", "soft.", "Bye, tool.") | Low | Open |
 | B-15 | Another student's answer labelled as the user: Earshot matched the group to the user's voice at 0.66 (threshold 0.6); no "by voice" tag shown for Me | Medium | Open |
-| B-14 | Remote speakers merged or switching numbers (a participant's question labelled as the instructor) | Medium | Open: R-2 on hold |
+| B-14 | Remote speakers merged or switching numbers (a participant's question labelled as the instructor) | **High** | Open: cause measured (live cut-off 0.68); 0.60 tested, owner to approve |
 | B-13 | Names and jargon misheard ("Aveena" for Abhinav, "Repito" for Rapido) | Medium | **Mostly fixed** 2026-10-24: vocabulary list (R-3), when filled in |
 | B-12 | Text in other writing systems ("やあみし") | Low | **Fixed** 2026-10-24 |
 | B-11 | Live transcription skipped the hallucination filters ("Thank you." / "Bye." in silence) | Medium | **Fixed** 2026-10-24 (partly: real "Okay."s score the same as invented ones) |
@@ -48,6 +48,23 @@ For the post-call huddle on 2026-10-24, start with **[Huddle summary](#huddle-su
 - **Cause:** not investigated. Unknown whether clean audio (BlackHole) would separate the two voices or give a clearer match.
 
 ## B-14: Remote speakers merged or switching numbers
+
+- **Seen again (2026-10-24, meeting 33 part 2, Zoom playback):** Amit Arora's 50 s question (23:17:18–23:18:09, starting "so Mokish, my point is like…") was labelled Mukesh Jain. Part 2 found one speaker in 8 minutes. Reported by the owner and, independently, by the ISB-CTO tester session (which also points to 12:20 and 12:28:56 in meeting 20).
+- **Measured cause:** the live separation cut-off.
+  - Amit vs Mukesh scored 0.43–0.46 voice similarity, against Mukesh vs himself 0.88.
+  - The live cut-off (`LiveDiarizer` threshold 0.68 cosine distance, i.e. similarity 0.32) only starts a new speaker below 0.32.
+  - It is not Resume: replaying part 2 without the carried-over voices gives the same single speaker.
+- **Scored against Zoom's own transcript** (the full 1 h 43 min class, 908 lines, 21 speakers, clean audio; utterances from Zoom's cues):
+
+  | Cut-off | Correct ~30 s after a line is written | Students as Mukesh | Amit Arora | Mukesh split | Correct at end of class |
+  |---|---|---|---|---|---|
+  | 0.68 (now) | 96.9% | 8.9% | 70% as Mukesh | 0.2% | 99.4% |
+  | 0.60 | 99.0% | 0.2% | 99% own | 0.8% | 98.8% |
+  | 0.55 | 98.7% | 0.1% | 99% own | 1.1% | 98.3% |
+  | 0.50 | 97.8% | 0.1% | 99% own | 2.3% | 97.1% |
+
+  - At 0.68 students are separated only late in the meeting, after enough speech has been heard; an agent reading the live file sees them as Mukesh until then.
+  - At 0.60, meeting 33 part 2 (speakers + mic audio) gives Amit his own speaker for exactly 23:17:19–23:18:09.
 
 - **Seen:** quality review of meeting 20 (ISB class) from the user's ISB-CTO session, 2026-10-24.
   - Speaker numbers sometimes switch.
