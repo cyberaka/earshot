@@ -63,7 +63,7 @@
 .legend { display: flex; gap: 14px; font-size: 13px; color: var(--ink-2); }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
-.lines { padding: 6px 20px 12px; max-height: 68vh; overflow-y: auto; min-height: 240px; }
+.lines { padding: 6px 20px 12px; max-height: 68vh; overflow-y: auto; min-height: 240px; } /* fitted to the window in Meeting.tsx */
 /* Compact rows (owner, 2026-10-24: "the more I can read the better"): one line for the name, tight spacing. */
 .line { display: flex; align-items: baseline; gap: 10px; padding: 3px 8px; margin: 0 -8px; line-height: 1.45; border-top: 1px solid var(--border-soft); }
 .lineBand { composes: line; background: var(--band); }

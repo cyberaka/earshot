@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import SummarizeButton from '../components/Summarize'
 import { api, LANGUAGES, callReady, channelLabels, deviceRoles, turnBands, fmtElapsed, nearest, speakerColor, type AttachmentView, type Citation, type Devices, type MeetingSummary, type MeetingView, type NoteView, type Person, type SegmentView, type SpeakerView } from '../api'
@@ -429,6 +429,8 @@ function LiveMeeting({ id }: { id: number }) {
   const [q, setQ] = useState('')
   const [discussed, setDiscussed] = useState('')
   const listRef = useRef<HTMLDivElement>(null)
+  const sectionRef = useRef<HTMLElement>(null)
+  const wrapRef = useRef<HTMLDivElement>(null)
   const currentPart = useRef(1)
   const partBase = useRef(0)
   const [timeMode, setTimeMode] = useTimeMode()
@@ -506,6 +508,25 @@ function LiveMeeting({ id }: { id: number }) {
     if (autoScroll && listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight
   }, [segments, autoScroll])
 
+  // The transcript fills the window below the header, so the newest line is always in view without
+  // scrolling the page (owner, 2026-10-24). Re-fitted when anything above or below it changes size.
+  useLayoutEffect(() => {
+    const list = listRef.current, section = sectionRef.current, wrap = wrapRef.current
+    if (!list || !section || !wrap) return
+    const fit = () => {
+      if (window.innerWidth <= 760) { list.style.maxHeight = ''; return } // phones: the page scrolls instead
+      const top = list.getBoundingClientRect().top + window.scrollY
+      const below = section.getBoundingClientRect().bottom - list.getBoundingClientRect().bottom
+      const h = Math.max(240, Math.floor(window.innerHeight - top - below - 24))
+      if (list.style.maxHeight !== `${h}px`) list.style.maxHeight = `${h}px`
+    }
+    fit()
+    const ro = new ResizeObserver(fit)
+    ro.observe(wrap)
+    window.addEventListener('resize', fit)
+    return () => { ro.disconnect(); window.removeEventListener('resize', fit) }
+  }, [m?.id, m?.live])
+
   function onCite(c: Citation | { startS: number }) {
     const target = nearest(segments, c.startS)
     if (!target) return
@@ -550,7 +571,7 @@ function LiveMeeting({ id }: { id: number }) {
   )
 
   return (
-    <div className={drop.dragging ? s.liveWrapDrop : s.liveWrap} {...drop.dropProps}>
+    <div ref={wrapRef} className={drop.dragging ? s.liveWrapDrop : s.liveWrap} {...drop.dropProps}>
       {drop.picker}
       {drop.dragging && <div className={s.dropHint} aria-hidden="true">Drop screenshots to add them to the transcript</div>}
       <header className={s.liveHead}>
@@ -595,7 +616,7 @@ function LiveMeeting({ id }: { id: number }) {
       )}
 
       <div className={s.liveBody}>
-        <section aria-label="Transcript" className={s.transcript}>
+        <section ref={sectionRef} aria-label="Transcript" className={s.transcript}>
           <div className={s.panelHead}>
             <h2 className={s.h2}>{m.live ? 'Live transcript' : 'Transcript'}</h2>
             <span className={s.headTools}>
