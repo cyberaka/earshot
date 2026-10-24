@@ -7,7 +7,7 @@ For the post-call huddle on 2026-10-24, start with **[Huddle summary](#huddle-su
 | # | Bug | Severity | Status |
 |---|-----|----------|--------|
 | B-16 | Short fragments and junk lines ("center." alone; "कि", "soft.", "Bye, tool.") | Low | Open |
-| B-15 | Another student's answer labelled as the user ("Me") | Medium | Open |
+| B-15 | Another student's answer labelled as the user: Earshot matched the group to the user's voice at 0.66 (threshold 0.6); no "by voice" tag shown for Me | Medium | Open |
 | B-14 | Remote speakers merged or switching numbers (a participant's question labelled as the instructor) | Medium | Open: R-2 on hold |
 | B-13 | Names and jargon misheard ("Aveena" for Abhinav, "Repito" for Rapido) | Medium | **Mostly fixed** 2026-10-24: vocabulary list (R-3), when filled in |
 | B-12 | Text in other writing systems ("やあみし") | Low | **Fixed** 2026-10-24 |
@@ -40,8 +40,12 @@ For the post-call huddle on 2026-10-24, start with **[Huddle summary](#huddle-su
   - "So, you can update it and based on the data itself, compute and all things which we do is data driven" (meeting 33, 22:57:50; meeting 30, 22:18:24) is labelled **Me**.
   - The owner confirmed they spoke only when Mukesh called on them ("So, Sushant, Abhinav, go ahead", after this line). It is probably Sushant Tambare.
   - Earlier, in meeting 30, "Okay?" from Mukesh was also labelled Me.
-- **What is known:** the same audio gave the same grouping twice. The student's voice and the user's were put in one voice group, which the user then named "Me". Both voices reached Earshot through the MacBook speakers and mic (Listen only).
-- **Cause:** not investigated. Unknown whether clean audio (BlackHole) would separate them.
+- **What is known (from the database):**
+  - The owner did not name anyone "Me". Earshot labelled the group "Me" **automatically**: it matched the owner's saved voice at 0.67 (meeting 30) and 0.66 (meeting 33), just over `me_threshold` 0.6. By comparison, Bharat matched his own saved voice at 0.99.
+  - That group held the owner's real answer and this student's line, so both were labelled Me. The same audio gave the same grouping twice.
+  - Both voices reached Earshot through the MacBook speakers and mic (Listen only).
+- **Display:** a person recognised by voice shows "· by voice", but an automatic "Me" does not, so it looks like a label the user set.
+- **Cause:** not investigated. Unknown whether clean audio (BlackHole) would separate the two voices or give a clearer match.
 
 ## B-14: Remote speakers merged or switching numbers
 
