@@ -6,6 +6,8 @@ For the post-call huddle on 2026-10-24, start with **[Huddle summary](#huddle-su
 
 | # | Bug | Severity | Status |
 |---|-----|----------|--------|
+| B-16 | Short fragments and junk lines ("center." alone; "कि", "soft.", "Bye, tool.") | Low | Open |
+| B-15 | Another student's answer labelled as the user ("Me") | Medium | Open |
 | B-14 | Remote speakers merged or switching numbers (a participant's question labelled as the instructor) | Medium | Open: R-2 on hold |
 | B-13 | Names and jargon misheard ("Aveena" for Abhinav, "Repito" for Rapido) | Medium | **Mostly fixed** 2026-10-24: vocabulary list (R-3), when filled in |
 | B-12 | Text in other writing systems ("やあみし") | Low | **Fixed** 2026-10-24 |
@@ -23,6 +25,24 @@ For the post-call huddle on 2026-10-24, start with **[Huddle summary](#huddle-su
 
 ---
 
+## B-16: Short fragments and junk lines
+
+- **Seen:** Zoom playback of the ISB class, meeting 33 (2026-10-24, Listen only through the MacBook mic).
+  - The user's answer (22:58:10–22:58:45) came out as six lines, the last ones "computing. So data" and "center." on their own.
+  - Lines with no meaning: "कि" (22:56:52), "soft." (22:58:01), "Bye, tool." (22:55:55).
+  - An invented name before real words: "Amrita Mishravao - Excellent. Excellent. Thanks, Aveena." (22:58:46). Nobody said "Amrita Mishravao".
+- **Effect:** harder to read, and an agent reading the live file gets broken sentences.
+- **Cause:** not investigated.
+
+## B-15: Another student's answer labelled as the user ("Me")
+
+- **Seen:** both Zoom playbacks of the ISB class (meetings 30 and 33, 2026-10-24).
+  - "So, you can update it and based on the data itself, compute and all things which we do is data driven" (meeting 33, 22:57:50; meeting 30, 22:18:24) is labelled **Me**.
+  - The owner confirmed they spoke only when Mukesh called on them ("So, Sushant, Abhinav, go ahead", after this line). It is probably Sushant Tambare.
+  - Earlier, in meeting 30, "Okay?" from Mukesh was also labelled Me.
+- **What is known:** the same audio gave the same grouping twice. The student's voice and the user's were put in one voice group, which the user then named "Me". Both voices reached Earshot through the MacBook speakers and mic (Listen only).
+- **Cause:** not investigated. Unknown whether clean audio (BlackHole) would separate them.
+
 ## B-14: Remote speakers merged or switching numbers
 
 - **Seen:** quality review of meeting 20 (ISB class) from the user's ISB-CTO session, 2026-10-24.
@@ -39,6 +59,7 @@ For the post-call huddle on 2026-10-24, start with **[Huddle summary](#huddle-su
 
 - **Mostly fixed (2026-10-24):** names and terms from Settings and the meeting go to Whisper as its prompt (R-3). In the trial it fixed Bharat, Sajal, Zomato, Capgemini and cross-functional, but not "Aveena"; one clip lost "Hardik". A line of only prompt words is dropped. It only helps when the list is filled in.
 
+- **Still seen with the list filled in (Zoom playback, meeting 33, 2026-10-24):** "Thanks, **Aveena**" with Abhinav in the list (also meeting 30: "Avinav"); "Bharaat" (not in that list); "Shant" for Sushant (not in the list); "shading my screen… see my skin" for "sharing my screen"; "not yet pride" for "not yet tried".
 - **Seen:** same review.
   - Names: Abhinav → "Aveena" / "Abhinah" / "Aminav"; Hardik → "Hathik"; Bharat → "Parath"; Sajal → "Sejal".
   - Companies: Zomato → "Zometo"; Rapido → "Repito"; Capgemini → "Capgevinan".
