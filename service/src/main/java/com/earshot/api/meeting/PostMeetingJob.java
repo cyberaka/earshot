@@ -25,6 +25,7 @@ import com.earshot.api.search.Indexer;
 import com.earshot.api.settings.Settings;
 import com.earshot.api.speaker.PeopleService;
 import com.earshot.api.speaker.SpeakerMatcher;
+import com.earshot.api.speaker.Vectors;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -37,6 +38,8 @@ import tools.jackson.databind.json.JsonMapper;
 public class PostMeetingJob implements JobWorker.Handler {
 
 	private static final Logger log = LoggerFactory.getLogger(PostMeetingJob.class);
+	// A caught-up voice this similar to one already in the meeting is that person (filled meeting 20: 0.86–0.97 same, < 0.45 new).
+	private static final double SAME_VOICE = 0.5;
 	private final JdbcClient db;
 	private final MlClient ml;
 	private final Settings settings;
@@ -46,10 +49,11 @@ public class PostMeetingJob implements JobWorker.Handler {
 	private final Indexer indexer;
 	private final MarkdownExporter exporter;
 	private final JsonMapper json;
+	private final LiveTranscript transcript;
 	private final Path work;
 
 	public PostMeetingJob(JdbcClient db, MlClient ml, Settings settings, SpeakerMatcher matcher, PeopleService people, Enricher enricher,
-			Indexer indexer, MarkdownExporter exporter, JsonMapper json, EarshotProperties props) {
+			Indexer indexer, MarkdownExporter exporter, JsonMapper json, LiveTranscript transcript, EarshotProperties props) {
 		this.db = db;
 		this.ml = ml;
 		this.settings = settings;
@@ -59,6 +63,7 @@ public class PostMeetingJob implements JobWorker.Handler {
 		this.indexer = indexer;
 		this.exporter = exporter;
 		this.json = json;
+		this.transcript = transcript;
 		this.work = props.data().resolve("audio/work");
 	}
 
@@ -82,7 +87,7 @@ public class PostMeetingJob implements JobWorker.Handler {
 		String stage = db.sql("SELECT stage FROM conversation WHERE id = :id").param("id", convId).query(String.class).single();
 
 		if ("live".equals(stage) && !"post_meeting_full".equals(job.type())) {
-			finishFromLive(job, meetingId, convId, recId, mode, files, "1".equals(m[3]) ? m[2] : m[2] + " (continued)", day);
+			finishFromLive(job, worker, meetingId, convId, recId, mode, files, language, "1".equals(m[3]) ? m[2] : m[2] + " (continued)", day);
 			return;
 		}
 		if ("live".equals(stage)) {
@@ -147,6 +152,7 @@ public class PostMeetingJob implements JobWorker.Handler {
 		db.sql("UPDATE meeting SET status = 'done' WHERE id = :id").param("id", meetingId).update();
 		db.sql("UPDATE recording SET status = 'done' WHERE id = :id").param("id", recId).update();
 		exporter.exportDay(day);
+		transcript.writeNow(meetingId);
 		log.info("event=post_meeting_done meeting={}", meetingId);
 	}
 
@@ -155,8 +161,9 @@ public class PostMeetingJob implements JobWorker.Handler {
 	 * final, the rolling summary becomes the meeting's summary, and only playback audio, the last
 	 * index entries and the export are made. Takes seconds.
 	 */
-	private void finishFromLive(Jobs.Job job, long meetingId, long convId, long recId, String mode, JsonNode files, String title,
-			LocalDate day) throws Exception {
+	private void finishFromLive(Jobs.Job job, JobWorker worker, long meetingId, long convId, long recId, String mode, JsonNode files,
+			String language, String title, LocalDate day) throws Exception {
+		catchUp(job, worker, meetingId, convId, mode, files, language);
 		jobs(job, "finish");
 		var inputs = new ArrayList<String>();
 		files.properties().forEach(e -> {
@@ -217,7 +224,131 @@ public class PostMeetingJob implements JobWorker.Handler {
 		db.sql("UPDATE meeting SET status = 'done' WHERE id = :id").param("id", meetingId).update();
 		db.sql("UPDATE recording SET status = 'done' WHERE id = :id").param("id", recId).update();
 		exporter.exportDay(day);
+		transcript.writeNow(meetingId);
 		log.info("event=meeting_finished meeting={} from=live", meetingId);
+	}
+
+	/**
+	 * Stop never loses text (BUGS.md B-2; owner decision D-7, 2026-10-24). When live transcription
+	 * was behind at Stop, the ML process drops its queue, and the audio after each channel's last
+	 * line is transcribed here from the saved file. Lines go to the voices already heard in the
+	 * meeting (by voice similarity), or to new speakers. Safe to repeat: it starts after the last
+	 * line on disk, so a paused and resumed job continues where it stopped.
+	 */
+	private void catchUp(Jobs.Job job, JobWorker worker, long meetingId, long convId, String mode, JsonNode files, String language) {
+		for (var e : files.properties()) {
+			String ch = e.getKey();
+			String src = e.getValue().asString();
+			if (!Files.exists(Path.of(src))) {
+				continue;
+			}
+			double last = db.sql("SELECT COALESCE(max(end_s), 0) FROM segment WHERE conversation_id = :c AND channel = :ch").param("c", convId)
+					.param("ch", ch).query(Double.class).single();
+			worker.checkpoint();
+			String dst = work.resolve("meeting-" + meetingId + "-catchup-" + ch + ".flac").toString();
+			try {
+				JsonNode prep = ml.prepare(src, dst);
+				double duration = prep.get("duration_s").asDouble();
+				var regions = new ArrayList<double[]>();
+				prep.get("regions").forEach(r -> {
+					double s = r.get(0).asDouble(), en = r.get(1).asDouble();
+					if (en > last + 0.3) {
+						regions.add(new double[] { Math.max(s, last), en });
+					}
+				});
+				if (regions.isEmpty()) {
+					continue;
+				}
+				double from = regions.getFirst()[0];
+				jobs(job, "catching up: %s, last %d min".formatted(ch, Math.max(1, Math.round((duration - from) / 60))));
+				log.info("event=catch_up_started meeting={} channel={} from_s={} to_s={}", meetingId, ch, Math.round(from), Math.round(duration));
+				Map<String, Object> filters = Map.of("no_speech_prob", settings.num("no_speech_prob"), "avg_logprob", settings.num("avg_logprob"),
+						"compression_ratio", settings.num("compression_ratio"));
+				JsonNode t = ml.transcribe(dst, from, duration, regions, language, filters);
+				// A line already heard live is not added twice (a guard: live times now match the file, BUGS.md B-9).
+				var recent = new java.util.HashSet<String>();
+				db.sql("SELECT text FROM segment WHERE conversation_id = :c AND channel = :ch AND end_s >= :from")
+						.param("c", convId).param("ch", ch).param("from", last - 120).query(String.class).list().forEach(x -> recent.add(normal(x)));
+				var segs = new ArrayList<JsonNode>();
+				t.get("segments").forEach(s -> {
+					if (s.get("start_s").asDouble() >= last - 0.2 && !recent.contains(normal(s.get("text").asString()))) {
+						segs.add(s);
+					}
+				});
+				if (segs.isEmpty()) {
+					continue;
+				}
+				var speakerOf = speakersFor(convId, ch, mode, dst, from, duration, regions, segs);
+				for (int i = 0; i < segs.size(); i++) {
+					JsonNode s = segs.get(i);
+					db.sql("""
+							INSERT INTO segment (conversation_id, speaker_cluster_id, channel, live, start_s, end_s, text, words_json, confidence)
+							VALUES (:c, :sc, :ch, false, :s, :e, :t, CAST(:w AS jsonb), :p)""").param("c", convId).param("sc", speakerOf.get(i))
+							.param("ch", ch).param("s", s.get("start_s").asDouble()).param("e", s.get("end_s").asDouble())
+							.param("t", s.get("text").asString()).param("w", s.get("words").toString())
+							.param("p", Math.exp(s.path("avg_logprob").asDouble())).update();
+				}
+				log.info("event=caught_up meeting={} channel={} lines={} from_s={}", meetingId, ch, segs.size(), Math.round(from));
+			} finally {
+				try {
+					Files.deleteIfExists(Path.of(dst));
+				} catch (java.io.IOException ignored) {
+					// a leftover working copy is cleaned with the rest of audio/work
+				}
+			}
+		}
+	}
+
+	/** Lower case letters and digits only, for comparing two transcriptions of the same words. */
+	static String normal(String text) {
+		return text.toLowerCase(java.util.Locale.ROOT).replaceAll("[^\\p{L}\\p{N}]+", "");
+	}
+
+	/** A speaker for each caught-up line: the user's mic on a call, else the closest known voice or a new one. */
+	private List<Long> speakersFor(long convId, String ch, String mode, String path, double from, double to, List<double[]> regions,
+			List<JsonNode> segs) {
+		var out = new ArrayList<Long>();
+		if ("mic".equals(ch) && "mic_system".equals(mode)) {
+			Long me = db.sql("SELECT id FROM speaker_cluster WHERE conversation_id = :c AND channel = 'mic' ORDER BY speech_s DESC LIMIT 1")
+					.param("c", convId).query(Long.class).optional().orElse(null);
+			segs.forEach(s -> out.add(me));
+			return out;
+		}
+		var known = db.sql("SELECT id, embedding::text FROM speaker_cluster WHERE conversation_id = :c AND channel = :ch AND embedding IS NOT NULL")
+				.param("c", convId).param("ch", ch).query((rs, i) -> Map.entry(rs.getLong(1), Vectors.parse(rs.getString(2)))).list();
+		JsonNode d = ml.diarize(path, from, to, regions, settings.num("diarization_threshold"));
+		var clusterOf = new HashMap<String, Long>();
+		for (JsonNode cl : d.get("clusters")) {
+			float[] e = Vectors.parse(cl.get("embedding").toString());
+			Long best = null;
+			double bestScore = 0;
+			for (var k : known) {
+				double score = Vectors.cosine(e, k.getValue());
+				if (score > bestScore) {
+					best = k.getKey();
+					bestScore = score;
+				}
+			}
+			if (best == null || bestScore < SAME_VOICE) {
+				best = db.sql("""
+						INSERT INTO speaker_cluster (conversation_id, label, channel, embedding, speech_s)
+						VALUES (:c, :l, :ch, CAST(:e AS vector), :s) RETURNING id""").param("c", convId).param("l", "catchup:" + ch + ":" + cl.get("label").asString())
+						.param("ch", ch).param("e", cl.get("embedding").toString()).param("s", cl.get("speech_s").asDouble()).query(Long.class).single();
+			}
+			clusterOf.put(cl.get("label").asString(), best);
+		}
+		for (JsonNode s : segs) {
+			double a = s.get("start_s").asDouble(), b = s.get("end_s").asDouble();
+			var overlap = new HashMap<String, Double>();
+			d.get("turns").forEach(tn -> {
+				double o = Math.min(b, tn.get("end").asDouble()) - Math.max(a, tn.get("start").asDouble());
+				if (o > 0) {
+					overlap.merge(tn.get("speaker").asString(), o, Double::sum);
+				}
+			});
+			out.add(overlap.entrySet().stream().max(Map.Entry.comparingByValue()).map(en -> clusterOf.get(en.getKey())).orElse(null));
+		}
+		return out;
 	}
 
 	private void jobs(Jobs.Job job, String stage) {

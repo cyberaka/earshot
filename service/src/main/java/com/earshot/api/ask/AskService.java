@@ -15,7 +15,8 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 
 import com.earshot.api.conversation.ConversationService;
-import com.earshot.api.llm.LlmClient;
+import com.earshot.api.llm.Insights;
+import com.earshot.api.llm.Insights.Feature;
 import com.earshot.api.llm.LlmClient.Message;
 import com.earshot.api.search.SearchService;
 import com.earshot.api.settings.Settings;
@@ -26,7 +27,8 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * Grounded Q&A over a meeting, a day or a date range (PRD §6.5, A-9). Evidence is numbered;
  * the model cites [n]; citations resolve to recording offsets, which survive the post-meeting
- * pass replacing segments (§9.2).
+ * pass replacing segments (§9.2). An optional feature: off unless the user picks a provider for
+ * it in Settings → Insights; a local model is not used while a meeting is live.
  */
 @Service
 public class AskService {
@@ -35,16 +37,16 @@ public class AskService {
 	private final JdbcClient db;
 	private final SearchService search;
 	private final ConversationService conversations;
-	private final LlmClient llm;
+	private final Insights insights;
 	private final Settings settings;
 	private final JsonMapper json;
 
-	public AskService(JdbcClient db, SearchService search, ConversationService conversations, LlmClient llm, Settings settings,
+	public AskService(JdbcClient db, SearchService search, ConversationService conversations, Insights insights, Settings settings,
 			JsonMapper json) {
 		this.db = db;
 		this.search = search;
 		this.conversations = conversations;
-		this.llm = llm;
+		this.insights = insights;
 		this.settings = settings;
 		this.json = json;
 	}
@@ -68,6 +70,7 @@ public class AskService {
 	}
 
 	public void ask(Ask req, Sink sink) {
+		var llm = insights.client(Feature.ASK); // throws when off, or local during a live meeting
 		var ctx = switch (req.scopeType()) {
 			case "meeting" -> meetingContext(Long.parseLong(req.scopeRef()), req);
 			case "day" -> rangeContext(LocalDate.parse(req.scopeRef()), LocalDate.parse(req.scopeRef()), req);
@@ -77,8 +80,7 @@ public class AskService {
 			}
 			default -> throw new IllegalArgumentException("scope " + req.scopeType());
 		};
-		String model = "meeting".equals(req.scopeType()) ? settings.str("llm_live_model") : settings.str("llm_batch_model");
-		String answer = llm.chatStream(model, ctx.messages(), sink::token);
+		String answer = llm.chatStream(insights.model(Feature.ASK), ctx.messages(), sink::token);
 		var cited = new LinkedHashSet<Integer>();
 		// "Not discussed" carries no evidence, whatever the model appended.
 		if (!answer.strip().toLowerCase().startsWith("not discussed")) {

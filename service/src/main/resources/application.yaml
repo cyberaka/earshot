@@ -5,7 +5,8 @@ spring:
   config:
     import: "optional:file:${EARSHOT_ENV_FILE:../.env}[.properties]"
   datasource:
-    url: ${EARSHOT_DB_URL:jdbc:postgresql://127.0.0.1:5434/earshot}
+    # Native Homebrew Postgres 17 + pgvector on 5435 (owner decision D-5, 2026-10-24: no Docker VM).
+    url: ${EARSHOT_DB_URL:jdbc:postgresql://127.0.0.1:5435/earshot}
     username: ${EARSHOT_DB_USER:earshot}
     password: ${EARSHOT_DB_PASSWORD:earshot}
     hikari:
@@ -37,6 +38,8 @@ logging:
 
 earshot:
   data-dir: ${EARSHOT_DATA_DIR:../data}
+  # The nightly backup's pg_dump: the same major version as the server.
+  pg-dump: ${EARSHOT_PG_DUMP:/opt/homebrew/opt/postgresql@17/bin/pg_dump}
   # Origins allowed to send state-changing requests and open WebSockets (PRD §9.4).
   allowed-origins: ${EARSHOT_ALLOWED_ORIGINS:http://localhost:8090,http://127.0.0.1:8090,http://localhost:5173,http://127.0.0.1:5173}
   ml:
@@ -53,9 +56,17 @@ earshot:
 
   # Defaults for runtime settings; the Settings screen overrides them via the setting table.
   defaults:
-    llm_batch_model: qwen2.5-7b-instruct
-    llm_live_model: qwen2.5-7b-instruct
-    embedding_model: text-embedding-nomic-embed-text-v1.5
+    # Optional AI insights (owner decision 2026-10-24): each feature is off, local, openai or anthropic.
+    # Keys come only from the environment or .env: OPENAI_API_KEY, ANTHROPIC_API_KEY.
+    insights_live_summary: "off"        # off, openai or anthropic (never local: it would share the GPU with live transcription)
+    insights_meeting_summary: "off"
+    insights_ask: "off"
+    insights_semantic_search: "off"     # off, local or openai (Anthropic has no embeddings)
+    insights_model_local: qwen2.5-7b-instruct
+    insights_model_openai: gpt-4.1-mini
+    insights_model_anthropic: claude-haiku-5-5
+    insights_embedding_local: text-embedding-nomic-embed-text-v1.5
+    insights_embedding_openai: text-embedding-3-small
     language: en+hi  # en, hi, auto, or a mix tried in order (en+hi: Hindi only when English is unsure)
     conversation_gap_seconds: 120
     max_conversation_minutes: 90
@@ -69,7 +80,7 @@ earshot:
     summary_every_segments: 8
     qa_prompt_max_tokens: 3000
     live_max_segment_seconds: 15
-    live_lag_skip_summary_seconds: 8
+    live_lag_warn_seconds: 60          # a banner when the transcript is this far behind the room
     recorder_filename_pattern: "(\\d{8})[_-](\\d{6})"
     raw_audio_retention_days: 30
     ambient_audio_retention_days: 30

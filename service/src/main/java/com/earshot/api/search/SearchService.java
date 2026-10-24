@@ -19,12 +19,12 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 
 import com.earshot.api.llm.LlmClient;
-import com.earshot.api.settings.Settings;
 import com.earshot.api.speaker.SpeakerNames;
 import com.earshot.api.speaker.Vectors;
 
 /**
- * Hybrid search (PRD §5.6): full text, trigram and vectors, merged by reciprocal-rank fusion.
+ * Hybrid search (PRD §5.6): full text and trigram, plus vectors when the optional semantic search
+ * is on, merged by reciprocal-rank fusion.
  * A query word that names a person also ranks that person's segments higher.
  */
 @Service
@@ -39,13 +39,11 @@ public class SearchService {
 			"there", "my", "our", "me", "us", "at", "by", "from", "so", "if", "not", "no", "yes");
 	private final JdbcClient db;
 	private final Indexer indexer;
-	private final Settings settings;
 	private final SpeakerNames names;
 
-	public SearchService(JdbcClient db, Indexer indexer, Settings settings, SpeakerNames names) {
+	public SearchService(JdbcClient db, Indexer indexer, SpeakerNames names) {
 		this.db = db;
 		this.indexer = indexer;
-		this.settings = settings;
 		this.names = names;
 	}
 
@@ -123,18 +121,21 @@ public class SearchService {
 						ORDER BY ts_rank(s.tsv, to_tsquery('simple', :q)) DESC, s.start_s DESC LIMIT :n""", sp));
 			}
 		}
-		try {
-			float[] qv = indexer.embedQuery(query);
-			var v = new HashMap<>(base);
-			v.put("v", Vectors.literal(qv));
-			v.put("m", settings.str("embedding_model"));
-			v.put("n", PER_LIST);
-			lists.add(ids("""
-					SELECT s.id FROM segment_vec sv JOIN segment s ON s.id = sv.segment_id JOIN conversation c ON c.id = s.conversation_id
-					WHERE sv.model = :m%s ORDER BY (sv.embedding::vector(%d)) <=> CAST(:v AS vector(%d)) LIMIT :n"""
-					.formatted(where, qv.length, qv.length), v));
-		} catch (LlmClient.LlmUnavailable e) {
-			log.warn("event=semantic_search_skipped reason=embeddings_offline");
+		// Meaning-based ranking only when the optional semantic search is on (and usable now).
+		if (indexer.semanticReady()) {
+			try {
+				float[] qv = indexer.embedQuery(query);
+				var v = new HashMap<>(base);
+				v.put("v", Vectors.literal(qv));
+				v.put("m", indexer.model());
+				v.put("n", PER_LIST);
+				lists.add(ids("""
+						SELECT s.id FROM segment_vec sv JOIN segment s ON s.id = sv.segment_id JOIN conversation c ON c.id = s.conversation_id
+						WHERE sv.model = :m%s ORDER BY (sv.embedding::vector(%d)) <=> CAST(:v AS vector(%d)) LIMIT :n"""
+						.formatted(where, qv.length, qv.length), v));
+			} catch (LlmClient.LlmUnavailable | com.earshot.api.llm.Insights.HeldForLive e) {
+				log.warn("event=semantic_search_skipped reason={}", e.getMessage());
+			}
 		}
 		Map<Long, Double> score = new LinkedHashMap<>();
 		for (var list : lists) {

@@ -46,12 +46,27 @@ export interface SearchHit {
   speaker: string; date: string; clock: string; conversationTitle: string | null; score: number
 }
 
+export type Provider = 'off' | 'local' | 'openai' | 'anthropic'
+export type InsightFeature = 'live_summary' | 'meeting_summary' | 'ask' | 'semantic_search'
+
+/** Optional AI (Settings → Insights): which provider each feature uses, and what leaves the Mac. */
+export interface InsightsStatus {
+  features: Record<InsightFeature, Provider>
+  providers: { local: { used: boolean; up: boolean }; openai: { used: boolean; keySet: boolean }; anthropic: { used: boolean; keySet: boolean } }
+  sendsTextOff: string[]
+  queue: number
+}
+
 export interface Health {
-  db: string; ml: string; capture: string; llm: string
+  db: string; ml: string; capture: string
+  insights: InsightsStatus
+  mlMemory?: { rss_mb: number; gpu_active_mb: number; gpu_cache_mb: number; gpu_peak_mb: number }
   memory: { totalBytes: number; usedBytes: number }
   disk: { freeBytes: number; lowDisk: boolean }
-  llmQueue: number; activeMeetingId: number | null; jobsPending: boolean
+  activeMeetingId: number | null; jobsPending: boolean
 }
+
+export const PROVIDER_LABEL: Record<Provider, string> = { off: 'Off', local: 'Local model', openai: 'OpenAI', anthropic: 'Anthropic' }
 
 export interface Person {
   id: number; name: string; aliases: string[]; is_me: boolean; voiceprints: number; voiceprint_sources: string | null
@@ -83,6 +98,7 @@ export interface MeetingSummary {
 export interface MeetingView {
   id: number; title: string; audio_mode: string; started_at: string; ended_at: string | null; status: string
   summary: MeetingSummary | null; pre_context: string | null; conversation_id: number; recording_id: number; live: boolean
+  finishing?: string | null; transcriptFile?: string
   parts: { part: number; conversation_id: number; recording_id: number; started_at: string; local_date: string; duration_s: number }[]
 }
 

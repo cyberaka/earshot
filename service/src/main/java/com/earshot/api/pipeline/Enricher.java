@@ -6,38 +6,42 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.earshot.api.llm.LlmClient;
+import com.earshot.api.llm.ChatClient;
+import com.earshot.api.llm.Insights;
+import com.earshot.api.llm.Insights.Feature;
+import com.earshot.api.llm.LlmClient.LlmUnavailable;
 import com.earshot.api.llm.LlmClient.Message;
-import com.earshot.api.settings.Settings;
 import com.earshot.api.speaker.SpeakerNames;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * Title, summary, action items and topics per conversation (PRD §5.2 step 10). The model sees
+ * Title, summary, action items and topics per conversation (PRD §5.2 step 10), when the optional
+ * meeting summary is on (Settings → Insights; off by default). The model sees
  * speakers as S1, S2, … and its output is stored with {{spk:id}} tokens, never names (§5.5).
  */
 @Service
 public class Enricher {
 
+	private static final Logger log = LoggerFactory.getLogger(Enricher.class);
 	private static final Pattern S_LABEL = Pattern.compile("\\bS(\\d+)\\b");
 	// Keeps a prompt inside a small model's context; longer conversations are summarised in parts.
 	private static final int CHUNK_CHARS = 9000;
 	private final JdbcClient db;
-	private final LlmClient llm;
-	private final Settings settings;
+	private final Insights insights;
 	private final SpeakerNames names;
 	private final JsonMapper json;
 
-	public Enricher(JdbcClient db, LlmClient llm, Settings settings, SpeakerNames names, JsonMapper json) {
+	public Enricher(JdbcClient db, Insights insights, SpeakerNames names, JsonMapper json) {
 		this.db = db;
-		this.llm = llm;
-		this.settings = settings;
+		this.insights = insights;
 		this.names = names;
 		this.json = json;
 	}
@@ -45,8 +49,25 @@ public class Enricher {
 	record Line(String label, String text) {
 	}
 
+	/**
+	 * Does nothing while the meeting summary is off. A provider failure is logged and skipped:
+	 * the transcript is complete without a summary, so it never holds a meeting or import back.
+	 */
 	@Transactional
 	public void enrich(long conversationId) {
+		if (!insights.enabled(Feature.MEETING_SUMMARY)) {
+			return;
+		}
+		ChatClient llm = insights.client(Feature.MEETING_SUMMARY);
+		String model = insights.model(Feature.MEETING_SUMMARY);
+		try {
+			summarize(conversationId, llm, model);
+		} catch (LlmUnavailable | IllegalStateException e) {
+			log.warn("event=summary_skipped conversation={} provider={} reason={}", conversationId, llm.name(), e.getMessage());
+		}
+	}
+
+	private void summarize(long conversationId, ChatClient llm, String model) {
 		var speakers = names.forConversation(conversationId);
 		var segs = db.sql("SELECT speaker_cluster_id, channel, text FROM segment WHERE conversation_id = :c ORDER BY start_s")
 				.param("c", conversationId).query((rs, i) -> new Object[] { rs.getObject(1), rs.getString(2), rs.getString(3) }).list();
@@ -75,7 +96,7 @@ public class Enricher {
 		});
 		String transcript = render(lines);
 		if (transcript.length() > CHUNK_CHARS) {
-			transcript = condense(lines, legend.toString());
+			transcript = condense(lines, legend.toString(), llm, model);
 		}
 		String prompt = """
 				Speakers:
@@ -88,7 +109,7 @@ public class Enricher {
 				 "action_items": [{"text": "what was promised", "owner": "S1 or null"}], "topics": ["1 to 4 topic tags"]}
 				Refer to speakers only as S1, S2, ... Use only facts in the transcript. If there are no action items, return [].
 				""".formatted(legend, transcript);
-		String reply = llm.chat(settings.str("llm_batch_model"), List.of(
+		String reply = llm.chat(model, List.of(
 				Message.system("You write concise meeting notes as JSON. Never invent facts."), Message.user(prompt)), true);
 		JsonNode out = llm.parseJson(reply);
 		Map<Integer, Long> clusterOf = new LinkedHashMap<>();
@@ -124,7 +145,7 @@ public class Enricher {
 	}
 
 	/** Map step for long conversations: notes per chunk, then the final prompt reads the notes. */
-	private String condense(List<Line> lines, String legend) {
+	private String condense(List<Line> lines, String legend, ChatClient llm, String model) {
 		var notes = new StringBuilder();
 		var chunk = new ArrayList<Line>();
 		int size = 0;
@@ -132,19 +153,19 @@ public class Enricher {
 			chunk.add(l);
 			size += l.text().length() + 6;
 			if (size >= CHUNK_CHARS) {
-				notes.append(noteChunk(chunk, legend)).append('\n');
+				notes.append(noteChunk(chunk, legend, llm, model)).append('\n');
 				chunk.clear();
 				size = 0;
 			}
 		}
 		if (!chunk.isEmpty()) {
-			notes.append(noteChunk(chunk, legend));
+			notes.append(noteChunk(chunk, legend, llm, model));
 		}
 		return "(condensed notes of a long conversation, in order)\n" + notes;
 	}
 
-	private String noteChunk(List<Line> chunk, String legend) {
-		return llm.chat(settings.str("llm_batch_model"), List.of(Message.system("You take terse factual notes."),
+	private String noteChunk(List<Line> chunk, String legend, ChatClient llm, String model) {
+		return llm.chat(model, List.of(Message.system("You take terse factual notes."),
 				Message.user("Speakers:\n" + legend + "\nWrite up to 8 terse bullet notes (decisions, promises, facts) of this part. "
 						+ "Keep speaker labels S1, S2.\n\n" + render(chunk))), false);
 	}

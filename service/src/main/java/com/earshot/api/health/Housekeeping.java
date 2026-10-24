@@ -10,6 +10,7 @@ import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -29,10 +30,21 @@ public class Housekeeping {
 	private final Settings settings;
 	private final Path backups;
 
-	public Housekeeping(JdbcClient db, Settings settings, EarshotProperties props) {
+	private final String pgDump;
+	private final String dbUrl;
+	private final String dbUser;
+	private final String dbPassword;
+
+	public Housekeeping(JdbcClient db, Settings settings, EarshotProperties props, @Value("${earshot.pg-dump}") String pgDump,
+			@Value("${spring.datasource.url}") String dbUrl, @Value("${spring.datasource.username}") String dbUser,
+			@Value("${spring.datasource.password}") String dbPassword) {
 		this.db = db;
 		this.settings = settings;
 		this.backups = props.data().resolve("backups");
+		this.pgDump = pgDump;
+		this.dbUrl = dbUrl;
+		this.dbUser = dbUser;
+		this.dbPassword = dbPassword;
 	}
 
 	@Scheduled(initialDelay = 60_000, fixedDelay = 3_600_000)
@@ -57,13 +69,22 @@ public class Housekeeping {
 					return;
 				}
 			}
-			var p = new ProcessBuilder("sh", "-c", "docker exec earshot-db pg_dump -U earshot earshot | gzip > '" + today + "'")
-					.redirectErrorStream(true).start();
-			String out = new String(p.getInputStream().readAllBytes());
+			// jdbc:postgresql://host:port/db -> pg_dump -h host -p port db (native Postgres, decision D-5).
+			var uri = java.net.URI.create(dbUrl.substring("jdbc:".length()));
+			var pb = new ProcessBuilder(pgDump, "-h", uri.getHost(), "-p", String.valueOf(uri.getPort()), "-U", dbUser, uri.getPath().substring(1));
+			pb.environment().put("PGPASSWORD", dbPassword);
+			Path errors = backups.resolve("backup-errors.txt");
+			pb.redirectError(errors.toFile());
+			Process p = pb.start();
+			try (var in = p.getInputStream(); var out = new java.util.zip.GZIPOutputStream(Files.newOutputStream(today))) {
+				in.transferTo(out);
+			}
 			if (p.waitFor() != 0) {
-				log.error("event=backup_failed output={}", out.strip());
+				log.error("event=backup_failed output={}", Files.readString(errors).strip());
+				Files.deleteIfExists(today);
 				return;
 			}
+			Files.deleteIfExists(errors);
 			int keep = (int) settings.num("backup_retention_days");
 			try (Stream<Path> files = Files.list(backups)) {
 				for (Path old : files.filter(f -> f.getFileName().toString().endsWith(".sql.gz")).sorted().toList().reversed().stream().skip(keep).toList()) {

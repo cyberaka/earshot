@@ -5,6 +5,7 @@
 import asyncio
 import logging
 import os
+import subprocess
 import time
 
 import uvicorn
@@ -64,9 +65,30 @@ class LiveStart(BaseModel):
     seeds: dict[str, list[dict]] = {}  # channel -> [{"label", "embedding"}] from earlier parts
 
 
+def memory() -> dict:
+    """This process's memory. The GPU numbers are MLX's: on 2026-10-24 its cache of freed buffers
+    had grown to 16 GB unnoticed (BUGS.md B-1), so it is reported where the user can see it."""
+    import mlx.core as mx
+    try:
+        rss_kb = int(subprocess.run(["ps", "-o", "rss=", "-p", str(os.getpid())], capture_output=True, text=True).stdout.strip() or 0)
+    except Exception:
+        rss_kb = 0
+    mb = 1024 * 1024
+    return {"rss_mb": rss_kb // 1024, "gpu_active_mb": mx.get_active_memory() // mb, "gpu_cache_mb": mx.get_cache_memory() // mb,
+            "gpu_peak_mb": mx.get_peak_memory() // mb}
+
+
 @app.get("/ml/health")
 def health():
-    return {"status": "up", "whisper_model": WHISPER_MODEL, "live_sessions": [k for k, v in live.SESSIONS.items() if not v.stopped]}
+    return {"status": "up", "whisper_model": WHISPER_MODEL, "live_sessions": [k for k, v in live.SESSIONS.items() if not v.stopped],
+            "memory": memory()}
+
+
+def release_gpu_cache():
+    """Batch work over: give MLX's spare buffers back unless a live meeting is reusing them."""
+    if not any(not v.stopped for v in live.SESSIONS.values()):
+        import mlx.core as mx
+        mx.clear_cache()
 
 
 @app.post("/ml/heartbeat", dependencies=[Depends(check_secret)])
@@ -139,6 +161,7 @@ def transcribe(req: Transcribe):
                         "words": [{**w, "s": round(w["s"] + cs, 3), "e": round(w["e"] + cs, 3)} for w in seg.words],
                         "avg_logprob": round(seg.avg_logprob, 3), "no_speech_prob": round(seg.no_speech_prob, 3)})
             previous = seg.text[-200:]
+    release_gpu_cache()
     log.info("event=transcribed path=%s span=%.1f-%.1f chunks=%d segments=%d dropped=%d took_s=%.1f", req.path, req.start_s,
              end, len(chunks), len(out), dropped, time.monotonic() - t)
     return {"segments": out, "dropped": dropped}
@@ -187,15 +210,17 @@ def live_stop(session_id: str):
 
 
 @app.websocket("/ml/live/{session_id}/audio")
-async def live_audio(ws: WebSocket, session_id: str, channel: str):
+async def live_audio(ws: WebSocket, session_id: str, channel: str, framing: str | None = None):
     if not ws_allowed(ws):
         await ws.close(code=4401)
         return
     await ws.accept()
     s = live.SESSIONS.get(session_id) or live.start(session_id, "en", 15.0, asyncio.get_running_loop())
+    # framing=seq: each frame starts with its sample index (current capture); without it, raw pcm.
+    feed = live.feed_framed if framing == "seq" else live.feed
     try:
         while True:
-            live.feed(s, channel, await ws.receive_bytes())
+            feed(s, channel, await ws.receive_bytes())
     except WebSocketDisconnect:
         pass
 
@@ -231,4 +256,6 @@ async def watchdog():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=ML_PORT, log_level="info")
+    # No keep-alive pings: the only WebSocket clients are local, and a ping missed while the GPU is
+    # busy closed the audio stream every ~40 s (BUGS.md B-9).
+    uvicorn.run(app, host="127.0.0.1", port=ML_PORT, log_level="info", ws_ping_interval=None, ws_ping_timeout=None)

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { api, LANGUAGES, fmtElapsed, nearest, speakerColor, type Citation, type Devices, type MeetingSummary, type MeetingView, type NoteView, type Person, type SegmentView, type SpeakerView } from '../api'
+import { api, LANGUAGES, PROVIDER_LABEL, fmtElapsed, nearest, speakerColor, type Citation, type Devices, type MeetingSummary, type MeetingView, type NoteView, type Person, type SegmentView, type SpeakerView } from '../api'
 import { Answer, useAsk } from '../components/AskBox'
 import { NoteEditor, NoteItem } from '../components/Notes'
 import { NameSpeaker } from './Today'
 import TimeToggle, { useTimeMode } from '../components/TimeToggle'
+import { useHealth } from '../components/Shell'
 import ui from '../components/ui.module.css'
 import s from './Meeting.module.css'
 
@@ -40,6 +41,11 @@ function StartMeeting() {
   const [micFile, setMicFile] = useState('')
   const [systemFile, setSystemFile] = useState('')
   const [busy, setBusy] = useState(false)
+  const health = useHealth(30_000)
+  const features = health?.insights?.features
+  // The agenda only feeds the optional AI (live summary, Ask); without them it would do nothing.
+  const usesAgenda = !!features && (features.live_summary !== 'off' || features.ask !== 'off')
+  const cloud = !!health?.insights?.sendsTextOff.length
   // Resuming defaults to the audio source the meeting last used.
   useEffect(() => { if (resumeId) api.meeting(resumeId).then(mv => { setResumeTitle(mv.title); setMode(mv.audio_mode); setRecordedS(mv.parts.reduce((t, p) => t + p.duration_s, 0)) }).catch(() => {}) }, [resumeId])
   const [error, setError] = useState<string | null>(null)
@@ -158,7 +164,7 @@ function StartMeeting() {
           </label>
         </section>
         <section className={ui.card}>
-          {!resumeId && (
+          {!resumeId && usesAgenda && (
             <>
               <label className={ui.field}>Agenda or notes (optional)
                 <textarea className={ui.textarea} rows={8} value={preContext} onChange={e => setPreContext(e.target.value)} placeholder="Paste the agenda, one item per line…" />
@@ -170,7 +176,9 @@ function StartMeeting() {
           )}
           {error && <div className={ui.error}>{error}</div>}
           <button className={ui.live} disabled={busy || blocked}><span className={s.whiteDot} />{busy ? 'Starting…' : resumeId ? 'Resume recording' : 'Start recording'}</button>
-          <span className={ui.muted}>Audio stays on this Mac. Answers come only from what is said.</span>
+          <span className={ui.muted}>{cloud
+            ? 'Audio stays on this Mac. Transcript text goes to your chosen AI provider for the Insights you turned on.'
+            : 'Audio and transcript stay on this Mac. The transcript is also written to data/live/current.md as it happens.'}</span>
         </section>
       </form>
       {!resumeId && past.length > 0 && (
@@ -214,7 +222,25 @@ function localDate(t: string | number) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
-interface LiveStatus { lagS: number; asrRtf: number; llmQueue: number; elapsedS: number; warning: string | null; device: string | null; language?: string | null }
+interface LiveStatus {
+  lagS: number; asrRtf: number; asrRtfAvg?: number; elapsedS: number; warning: string | null; device: string | null; language?: string | null
+  /** Plain-language warning when transcription can't keep up (null when it can). */
+  behind?: string | null
+  mlMemoryMb?: number | null; transcriptFile?: string; liveSummary?: string | null
+}
+
+function gb(mb: number) { return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB` }
+
+/** "45 s", "3 min", for the lag chip. */
+function fmtLag(sec: number) {
+  return sec < 90 ? `${sec.toFixed(sec < 10 ? 1 : 0)} s` : `${Math.round(sec / 60)} min`
+}
+
+/** The chip after Stop: what the finishing pass is doing. */
+function finishingLabel(stage?: string | null) {
+  if (stage?.startsWith('catching up')) return 'Catching up…'
+  return 'Finishing…'
+}
 
 function clockOf(sec: number) {
   const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), x = Math.floor(sec % 60)
@@ -292,6 +318,9 @@ function LiveMeeting({ id }: { id: number }) {
   const rows = useRef<Map<number, HTMLDivElement>>(new Map())
   const follow = useRef(true)
   const { items, setItems, busy, run } = useAsk('meeting', String(id))
+  const health = useHealth(30_000)
+  const askWith = health?.insights?.features.ask ?? 'off'
+  const summaryWith = health?.insights?.features.live_summary ?? 'off'
 
   const reload = useCallback(async () => {
     const mv = await api.meeting(id)
@@ -391,12 +420,12 @@ function LiveMeeting({ id }: { id: number }) {
         <div className={s.liveChips}>
           {m.live
             ? <span className={s.recChip}><span className={s.recDot} /><span className="mono">{clockOf(elapsed)}</span></span>
-            : <span className={s.neutralChip}>{m.status === 'done' ? 'Final transcript' : m.status === 'failed' ? 'Failed' : 'Finishing…'}</span>}
+            : <span className={s.neutralChip}>{m.status === 'done' ? 'Final transcript' : m.status === 'failed' ? 'Failed' : finishingLabel(m.finishing)}</span>}
           {m.live && status?.device && <DeviceSwitch id={m.id} mode={m.audio_mode} current={status.device}
             onSwitched={device => { setStatus(st => st && { ...st, device, warning: null }); setError(null) }} onError={setError} />}
           {m.live && status?.language && <LanguageSwitch id={m.id} current={status.language}
             onSwitched={language => setStatus(st => st && { ...st, language })} onError={setError} />}
-          {m.live && status && <span className={status.lagS > 10 ? s.badChip : s.neutralChip}>Lag {status.lagS.toFixed(1)} s</span>}
+          {m.live && status && <span className={status.lagS > 10 ? s.badChip : s.neutralChip} title="How old the newest line is">Lag {fmtLag(status.lagS)}</span>}
           {m.live
             ? <button className={ui.dark} onClick={stop} disabled={stopping}><span className={s.stopSq} />{stopping ? 'Stopping…' : 'Stop'}</button>
             : m.status === 'done' && <>
@@ -406,6 +435,10 @@ function LiveMeeting({ id }: { id: number }) {
         </div>
       </header>
       {((m.live && status?.warning) || error) && <div className={ui.error}>{(m.live && status?.warning) || error}</div>}
+      {m.live && status?.behind && <div className={ui.notice} role="status">{status.behind}</div>}
+      {!m.live && m.status === 'processing' && m.finishing?.startsWith('catching up') && (
+        <div className={ui.notice} role="status">Transcription was behind when you stopped. The rest is being transcribed from the saved audio ({m.finishing.replace('catching up: ', '')}); lines appear here when it is done. Nothing is lost.</div>
+      )}
 
       <div className={s.liveBody}>
         <section aria-label="Transcript" className={s.transcript}>
@@ -469,20 +502,21 @@ function LiveMeeting({ id }: { id: number }) {
           </div>
           {m.live && status && (
             <div className={s.resources}>
-              <span>Transcription speed <b className="mono">{status.asrRtf.toFixed(2)}× real time</b></span>
-              <span>LLM queue <b className="mono">{status.llmQueue}</b></span>
+              <span title="Time to transcribe a minute of speech, over the last minute: below 1× keeps up">Transcription speed <b className="mono">{(status.asrRtfAvg ?? status.asrRtf).toFixed(2)}× real time</b></span>
+              {status.mlMemoryMb != null && <span title="Speech engine memory, including GPU buffers">Speech engine <b className="mono">{gb(status.mlMemoryMb)}</b></span>}
               <span>Audio on disk <b className="mono">✓</b></span>
+              {status.transcriptFile && <span title={status.transcriptFile}>Transcript file <b className="mono">data/live/current.md</b></span>}
             </div>
           )}
         </section>
 
-        <aside className={s.side} aria-label="Meeting assistant">
-          <section className={ui.card}>
+        <aside className={s.side} aria-label="Meeting notes and optional insights">
+          {(summary || summaryWith !== 'off') && <section className={ui.card}>
             <div className={s.panelHead}>
               <h2 className={s.h2}>Running summary</h2>
               {summary?.updatedAt && <span className={ui.muted}>updated {new Date(summary.updatedAt).toLocaleTimeString()}</span>}
             </div>
-            {!summary ? <span className={ui.muted}>Appears after the first few minutes.</span> : (
+            {!summary ? <span className={ui.muted}>{m.live ? `Appears after the first few minutes (${PROVIDER_LABEL[summaryWith]}).` : 'No summary for this meeting.'}</span> : (
               <>
                 <ul className={s.bullets}>{summary.summary.map((b, i) => <li key={i}>{b}</li>)}</ul>
                 {summary.topics.length > 0 && <div className={s.tags}>{summary.topics.map(t => <span key={t} className={ui.chip} style={{ background: 'var(--border-soft)', color: 'var(--ink-2)' }}>{t}</span>)}</div>}
@@ -512,7 +546,7 @@ function LiveMeeting({ id }: { id: number }) {
                 )}
               </>
             )}
-          </section>
+          </section>}
 
           <section className={ui.card}>
             <h2 className={s.h2}>Your notes</h2>
@@ -526,8 +560,9 @@ function LiveMeeting({ id }: { id: number }) {
             }} />
           </section>
 
-          <section className={ui.card}>
+          {askWith !== 'off' && <section className={ui.card}>
             <h2 className={s.h2}>Ask</h2>
+            {askWith === 'local' && m.live && <span className={ui.muted}>Ask uses the local model, which waits until you stop so transcription keeps the GPU.</span>}
             <form className={s.discussed} onSubmit={e => { e.preventDefault(); if (discussed.trim() && !busy) { run(discussed.trim(), 'was_discussed', `Was ${discussed.trim()} discussed?`); setDiscussed('') } }}>
               <label htmlFor="discussed" className="sr-only">Was X discussed?</label>
               <span className={ui.muted}>Was</span>
@@ -547,7 +582,7 @@ function LiveMeeting({ id }: { id: number }) {
               <input id="ask-live" className={ui.input} value={q} onChange={e => setQ(e.target.value)} placeholder="Ask about this meeting…" />
               <button className={ui.primary} disabled={busy || !q.trim()}>Ask</button>
             </form>
-          </section>
+          </section>}
         </aside>
       </div>
     </div>

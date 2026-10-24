@@ -11,11 +11,13 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.earshot.api.job.Jobs;
-import com.earshot.api.llm.LlmClient;
+import com.earshot.api.llm.Insights;
 import com.earshot.api.meeting.MeetingService;
 import com.earshot.api.ml.MlClient;
 import com.earshot.api.recording.ImportService;
 import com.earshot.api.settings.Settings;
+
+import tools.jackson.databind.JsonNode;
 
 /** Health of every part, plus the resources indicator (PRD §8). */
 @RestController
@@ -23,17 +25,17 @@ public class HealthController {
 
 	private final JdbcClient db;
 	private final MlClient ml;
-	private final LlmClient llm;
+	private final Insights insights;
 	private final ImportService imports;
 	private final MeetingService meetings;
 	private final Jobs jobs;
 	private final Settings settings;
 
-	public HealthController(JdbcClient db, MlClient ml, LlmClient llm, ImportService imports, MeetingService meetings, Jobs jobs,
+	public HealthController(JdbcClient db, MlClient ml, Insights insights, ImportService imports, MeetingService meetings, Jobs jobs,
 			Settings settings) {
 		this.db = db;
 		this.ml = ml;
-		this.llm = llm;
+		this.insights = insights;
 		this.imports = imports;
 		this.meetings = meetings;
 		this.jobs = jobs;
@@ -44,15 +46,24 @@ public class HealthController {
 	public Map<String, Object> health() {
 		var out = new LinkedHashMap<String, Object>();
 		out.put("db", up(() -> db.sql("SELECT 1").query(Integer.class).single()));
-		out.put("ml", up(ml::health));
+		JsonNode mlHealth = null;
+		try {
+			mlHealth = ml.health();
+		} catch (Exception e) {
+			// reported as down below
+		}
+		out.put("ml", mlHealth == null ? "down" : "up");
+		if (mlHealth != null && mlHealth.has("memory")) {
+			out.put("mlMemory", mlHealth.get("memory"));
+		}
 		out.put("capture", up(ml::captureHealth));
-		out.put("llm", llm.available() ? "up" : "down");
+		// Optional AI: per feature, which provider (if any), and what leaves the Mac.
+		out.put("insights", insights.status());
 		var os = (com.sun.management.OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
 		long total = os.getTotalMemorySize();
 		out.put("memory", Map.of("totalBytes", total, "usedBytes", total - os.getFreeMemorySize()));
 		long free = imports.freeBytes();
 		out.put("disk", Map.of("freeBytes", free, "lowDisk", free < settings.num("min_free_disk_gb") * 1024 * 1024 * 1024));
-		out.put("llmQueue", llm.queueDepth());
 		out.put("activeMeetingId", meetings.activeId());
 		out.put("jobsPending", jobs.pending());
 		return out;

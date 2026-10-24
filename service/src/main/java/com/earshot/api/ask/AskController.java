@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import com.earshot.api.llm.Insights;
 import com.earshot.api.llm.LlmClient;
 
 /** POST /api/ask streams the answer as server-sent events: token*, citations, done. */
@@ -53,7 +54,10 @@ public class AskController {
 				});
 				emitter.complete();
 			} catch (LlmClient.LlmUnavailable e) {
-				send(emitter, "error", Map.of("message", "LLM offline"));
+				send(emitter, "error", Map.of("message", "The AI provider is unavailable: " + e.getMessage()));
+				emitter.complete();
+			} catch (Insights.Off | Insights.HeldForLive e) {
+				send(emitter, "error", Map.of("message", e.getMessage()));
 				emitter.complete();
 			} catch (Exception e) {
 				log.error("event=ask_failed reason={}", e.toString(), e);

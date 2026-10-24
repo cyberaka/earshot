@@ -21,10 +21,12 @@ public class MarkdownExporter {
 	private static final Logger log = LoggerFactory.getLogger(MarkdownExporter.class);
 	private static final DateTimeFormatter HEADING = DateTimeFormatter.ofPattern("yyyy-MM-dd (EEE)", Locale.ENGLISH);
 	private final ConversationService conversations;
+	private final com.earshot.api.meeting.LiveTranscript transcripts;
 	private final Path notes;
 
-	public MarkdownExporter(ConversationService conversations, EarshotProperties props) {
+	public MarkdownExporter(ConversationService conversations, com.earshot.api.meeting.LiveTranscript transcripts, EarshotProperties props) {
 		this.conversations = conversations;
+		this.transcripts = transcripts;
 		this.notes = props.data().resolve("notes");
 	}
 
@@ -33,6 +35,8 @@ public class MarkdownExporter {
 	}
 
 	public void exportDay(LocalDate day) {
+		// Whatever re-renders the day's notes (a rename, merge, moved line) also changes its meetings' transcript files.
+		transcripts.dayChanged(day);
 		try {
 			Files.createDirectories(notes);
 			var convs = conversations.day(day).conversations().stream().filter(c -> !c.ambient() && c.duplicateOfMeetingId() == null).toList();

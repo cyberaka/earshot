@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api, nearest, fmtDuration, fmtElapsed, speakerColor, todayLocal, type ConversationDetail, type DayView, type NoteView, type Person, type SpeakerView } from '../api'
 import AskBox from '../components/AskBox'
+import { useHealth } from '../components/Shell'
 import TimeToggle, { useTimeMode } from '../components/TimeToggle'
 import NotesSection, { NoteEditor, NoteItem } from '../components/Notes'
 import ui from '../components/ui.module.css'
@@ -18,6 +19,8 @@ function longDate(date: string) {
 }
 
 export default function Today() {
+  // Ask is an optional AI feature (Settings → Insights); without it the day is transcript and notes.
+  const askOn = (useHealth(30_000)?.insights?.features.ask ?? 'off') !== 'off'
   const params = useParams()
   const navigate = useNavigate()
   const [latest, setLatest] = useState<string | null>(null)
@@ -69,8 +72,8 @@ export default function Today() {
       </div>
 
       {error && <div className={ui.error}>{error}</div>}
-      <AskBox key={date} scopeType="day" scopeRef={date} placeholder={`Ask about this day, e.g. "What did I promise Ravi?"`}
-        onCite={c => { navigate(`/day/${date}/${c.conversationId}`); setPendingSeek({ id: c.conversationId, startS: c.startS }) }} />
+      {askOn && <AskBox key={date} scopeType="day" scopeRef={date} placeholder={`Ask about this day, e.g. "What did I promise Ravi?"`}
+        onCite={c => { navigate(`/day/${date}/${c.conversationId}`); setPendingSeek({ id: c.conversationId, startS: c.startS }) }} />}
 
       {day && visible.length === 0 && (
         <div className={ui.empty}>No conversations on this day yet. <Link to="/import">Import recorder files</Link> or <Link to="/meeting">start a meeting</Link>.</div>

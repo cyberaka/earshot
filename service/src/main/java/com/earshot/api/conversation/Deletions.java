@@ -20,10 +20,21 @@ public class Deletions {
 	private static final Logger log = LoggerFactory.getLogger(Deletions.class);
 	private final JdbcClient db;
 	private final MarkdownExporter exporter;
+	private final com.earshot.api.meeting.LiveTranscript transcripts;
 
-	public Deletions(JdbcClient db, MarkdownExporter exporter) {
+	public Deletions(JdbcClient db, MarkdownExporter exporter, com.earshot.api.meeting.LiveTranscript transcripts) {
 		this.db = db;
 		this.exporter = exporter;
+		this.transcripts = transcripts;
+	}
+
+	/** Meetings that no longer exist lose their transcript file in data/live. */
+	private void forgetGoneMeetings(List<Long> meetingIds) {
+		for (long m : meetingIds) {
+			if (db.sql("SELECT count(*) FROM meeting WHERE id = :m").param("m", m).query(Long.class).single() == 0) {
+				transcripts.forget(m);
+			}
+		}
 	}
 
 	public int conversation(long id) throws IOException {
@@ -32,8 +43,11 @@ public class Deletions {
 		if (row == null) {
 			return 0;
 		}
+		List<Long> meetings = db.sql("SELECT meeting_id FROM conversation WHERE id = :id AND meeting_id IS NOT NULL").param("id", id)
+				.query(Long.class).list();
 		db.sql("DELETE FROM conversation WHERE id = :id").param("id", id).update();
 		dropRecordingIfEmpty((long) row[0]);
+		forgetGoneMeetings(meetings);
 		exporter.exportDay((LocalDate) row[1]);
 		return 1;
 	}
@@ -41,10 +55,13 @@ public class Deletions {
 	public int day(LocalDate day) throws IOException {
 		List<Long> recordings = db.sql("SELECT DISTINCT recording_id FROM conversation WHERE local_date = :d").param("d", day)
 				.query(Long.class).list();
+		List<Long> meetings = db.sql("SELECT DISTINCT meeting_id FROM conversation WHERE local_date = :d AND meeting_id IS NOT NULL")
+				.param("d", day).query(Long.class).list();
 		int n = db.sql("DELETE FROM conversation WHERE local_date = :d").param("d", day).update();
 		for (long r : recordings) {
 			dropRecordingIfEmpty(r);
 		}
+		forgetGoneMeetings(meetings);
 		Files.deleteIfExists(exporter.path(day));
 		log.info("event=day_deleted day={} conversations={}", day, n);
 		return n;

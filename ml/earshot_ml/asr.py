@@ -14,6 +14,10 @@ from .config import SAMPLE_RATE, WHISPER_MODEL
 
 # MLX shares one GPU; live and batch transcription take turns (PRD §8).
 GPU_LOCK = threading.Lock()
+# MLX keeps freed GPU buffers for reuse; every utterance length needs new sizes, so without a cap
+# the pile grew to 16 GB in 40 hours and the Mac swapped live transcription to 1.6x real time
+# (2026-10-24). 1 GB keeps reuse for the common sizes.
+mx.set_cache_limit(1 << 30)
 
 # Mixed languages ("en+hi"): each utterance is transcribed in the first language; unless Whisper is
 # sure of it, the next is tried too, and kept only if it is clean, really in that language's script,
@@ -79,8 +83,9 @@ class MlxWhisper(ASREngine):
                     alt = self._transcribe(samples, other, None, temperature=0.0)
                     if self._better(alt, best, other):
                         best = alt
-            return best
-        return self._transcribe(samples, language, initial_prompt)
+            return [g for g in best if not foreign(g, language)]
+        segs = self._transcribe(samples, language, initial_prompt)
+        return [g for g in segs if not foreign(g, language)]
 
     @staticmethod
     def _better(alt: list[Segment], best: list[Segment], language: str) -> bool:
@@ -150,6 +155,15 @@ def garbled(segments: list[Segment], language: str) -> bool:
             if words[i:i + n] * 4 == words[i:i + 4 * n]:
                 return True
     return False
+
+
+def foreign(seg: Segment, language: str | None) -> bool:
+    """Text in a writing system nobody was speaking: with English and/or Hindi set, Whisper sometimes
+    writes noise as Japanese or Cyrillic ("やあみし", ISB class 2026-10-24). Latin with accents and
+    Devanagari are fine; with `auto` anything goes."""
+    if not language or language == "auto" or not set(language.split("+")) <= {"en", "hi"}:
+        return False
+    return any(c.isalpha() and not (c <= "\u024f" or "\u0900" <= c <= "\u097f") for c in seg.text)
 
 
 def in_script(segments: list[Segment], language: str) -> bool:

@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { api, todayLocal, type NoteHit, type SearchHit } from '../api'
 import { NoteText } from '../components/Notes'
 import AskBox from '../components/AskBox'
+import { useHealth } from '../components/Shell'
 import ui from '../components/ui.module.css'
 import s from './Search.module.css'
 
@@ -14,6 +15,7 @@ function weeksAgo(n: number) {
 
 /** Hybrid search across all days (A-7) and range Q&A (A-9). */
 export default function Search() {
+  const askOn = (useHealth(30_000)?.insights?.features.ask ?? 'off') !== 'off'
   const [params, setParams] = useSearchParams()
   const q = params.get('q') ?? ''
   const [input, setInput] = useState(q)
@@ -36,7 +38,7 @@ export default function Search() {
 
   return (
     <>
-      <h1 className={s.title}>Search &amp; ask</h1>
+      <h1 className={s.title}>Search</h1>
       <form className={s.searchForm} onSubmit={submit} role="search">
         <label htmlFor="search-q" className="sr-only">Search</label>
         <input id="search-q" type="search" className={ui.input} value={input} onChange={e => setInput(e.target.value)} placeholder="Words, names or topics — misspellings are fine" />
@@ -66,7 +68,7 @@ export default function Search() {
           ))}
         </section>
       )}
-      <section className={ui.card}>
+      {askOn && <section className={ui.card}>
         <div className={s.rangeRow}>
           <h2 className={s.h2}>Ask across days</h2>
           <label className={ui.field}>From<input type="date" className={ui.input} value={from} onChange={e => setFrom(e.target.value)} /></label>
@@ -75,7 +77,7 @@ export default function Search() {
         <AskBox key={`${from}..${to}`} scopeType="range" scopeRef={`${from}..${to}`} placeholder="e.g. What did Ravi and I agree about the migration?"
           onCite={() => {}} />
         <span className={ui.muted}>Answers cite the transcript; open a citation's day from the results above or the Today view.</span>
-      </section>
+      </section>}
     </>
   )
 }

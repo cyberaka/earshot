@@ -35,7 +35,7 @@ export function Answer({ qa, onCite }: { qa: QA; onCite: (c: Citation) => void }
     <div className={s.thread}>
       <div className={s.q}>{qa.question}</div>
       <div className={s.a}>
-        {qa.error ? <span className={s.err}>{qa.error === 'LLM offline' ? 'The LLM is offline. Start LM Studio and try again.' : qa.error}</span>
+        {qa.error ? <span className={s.err}>{qa.error}</span>
           : <span className={s.text}>{qa.answer || (qa.pending ? 'Thinking…' : '')}</span>}
         {qa.citations.length > 0 && (
           <span className={s.cites}>

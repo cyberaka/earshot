@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import queue
+import struct
 import threading
 import time
 from dataclasses import dataclass, field
@@ -16,6 +17,8 @@ log = logging.getLogger(__name__)
 
 
 REGROUP_EVERY_S = 30.0
+FILTERS = asr.Filters()
+RECENT_AUDIO_S = 60.0
 
 
 @dataclass
@@ -25,12 +28,16 @@ class Session:
     max_segment_s: float = 15.0
     segmenters: dict[str, StreamSegmenter] = field(default_factory=dict)
     received_s: dict[str, float] = field(default_factory=dict)
+    # Next expected sample per channel, for framed streams (sample index + pcm).
+    expected: dict[str, int] = field(default_factory=dict)
     last_cut_end: dict[str, float] = field(default_factory=dict)
     listeners: set = field(default_factory=set)
     work: "queue.Queue" = field(default_factory=queue.Queue)
     loop: asyncio.AbstractEventLoop | None = None
     stopped: bool = False
     backlog_s: float = 0.0
+    # Recent (audio seconds, processing seconds) per utterance, for a steadier speed than one line's.
+    recent: list = field(default_factory=list)
     # Live speaker separation per channel; emitted segments by key, for relabelling after regrouping.
     diarizers: dict[str, "speakers.LiveDiarizer"] = field(default_factory=dict)
     emitted: dict[str, list] = field(default_factory=dict)
@@ -58,14 +65,47 @@ def start(session_id: str, language: str, max_segment_s: float, loop, seeds: dic
 
 
 def stop(session_id: str) -> None:
+    """Ends the session at once. Queued audio is dropped, not transcribed: the service closes the
+    events socket at Stop, so lines made now would be lost, and they would hold the GPU the
+    after-Stop pass needs. That pass transcribes everything after the last delivered line from
+    the saved audio (BUGS.md B-2)."""
     s = SESSIONS.get(session_id)
     if s:
-        for channel, seg in s.segmenters.items():
-            if seg.in_speech and seg.buf:
-                start_s, audio, cap = seg._flush(cap=False)
-                _enqueue(s, channel, start_s, audio, cap)
-        s.work.put(None)
         s.stopped = True
+        dropped = 0
+        while True:
+            try:
+                item = s.work.get_nowait()
+            except queue.Empty:
+                break
+            if item is not None:
+                dropped += 1
+        s.backlog_s = 0.0
+        s.work.put(None)
+        log.info("event=live_stopped session=%s dropped_items=%d", session_id, dropped)
+
+
+def feed_framed(s: Session, channel: str, data: bytes) -> None:
+    """A frame from capture: 8-byte little-endian sample index, then pcm16. Lost audio becomes
+    silence and repeated audio is skipped, so live times stay those of the saved file (BUGS.md B-9)."""
+    first = struct.unpack_from("<q", data)[0]
+    pcm = data[8:]
+    expected = s.expected.get(channel)
+    if expected is None:
+        # The stream may start mid-recording (a restarted ML process): start the clock there.
+        seg = s.segmenters.setdefault(channel, StreamSegmenter(max_seconds=s.max_segment_s))
+        seg.pos = first
+        s.received_s[channel] = first / SAMPLE_RATE
+        expected = first
+    if first > expected:
+        gap = first - expected
+        log.warning("event=live_stream_gap session=%s channel=%s missing_s=%.2f", s.id, channel, gap / SAMPLE_RATE)
+        feed(s, channel, np.zeros(gap, dtype=np.int16).tobytes())
+    elif first < expected:
+        pcm = pcm[(expected - first) * 2:]
+    if pcm:
+        feed(s, channel, pcm)
+    s.expected[channel] = max(expected, first + len(data[8:]) // 2)
 
 
 def feed(s: Session, channel: str, pcm16: bytes) -> None:
@@ -105,11 +145,17 @@ def _worker(s: Session) -> None:
                 _regroup(s, channel)
             _emit(s, {"type": "stopped"})
             return
-        channel, start_s, audio, cap, queued_at = item
+        channel, start_s, audio, cap, _queued_at = item
+        if s.stopped:
+            continue
         dur = len(audio) / SAMPLE_RATE
         t0 = time.monotonic()
         try:
-            segments = asr.engine().transcribe(audio, s.language)
+            # The same hallucination filters as batch (PRD §5.2 step 8); the audio is VAD-cut speech.
+            heard = asr.engine().transcribe(audio, s.language)
+            segments = [g for g in heard if asr.keep(g, FILTERS, 1.0)]
+            if len(segments) < len(heard):
+                log.info("event=live_dropped session=%s channel=%s texts=%s", s.id, channel, [g.text for g in heard if g not in segments])
         except Exception as e:
             log.exception("event=live_asr_failed session=%s", s.id)
             _emit(s, {"type": "error", "message": str(e)})
@@ -143,10 +189,25 @@ def _worker(s: Session) -> None:
         if start_s + dur >= s.next_regroup.get(channel, REGROUP_EVERY_S):
             s.next_regroup[channel] = start_s + dur + REGROUP_EVERY_S
             _regroup(s, channel)
-        # Lag: how long after the segment ended (in wall time) its text was ready, plus queued audio.
-        _emit(s, {"type": "status", "lag_s": round(time.monotonic() - queued_at + s.backlog_s, 2),
-                  "asr_rtf": round((time.monotonic() - t0) / max(dur, 0.01), 3),
+        took = time.monotonic() - t0
+        s.recent.append((dur, took))
+        while sum(d for d, _ in s.recent) > RECENT_AUDIO_S and len(s.recent) > 1:
+            s.recent.pop(0)
+        _emit(s, {"type": "status", "lag_s": round(lag(s, channel, start_s + dur), 2),
+                  "asr_rtf": round(took / max(dur, 0.01), 3),
+                  "asr_rtf_avg": round(sum(t for _, t in s.recent) / max(sum(d for d, _ in s.recent), 0.01), 3),
                   "received_s": {k: round(v, 1) for k, v in s.received_s.items()}})
+
+
+def lag(s: Session, channel: str, done_until: float) -> float:
+    """How old the newest line is, in seconds of audio: the age of the oldest audio still waiting,
+    or, with nothing waiting, how far the room has moved on since the line just made. Counting the
+    queued audio on top of the wait (the old formula) counted the same seconds twice (BUGS.md B-5)."""
+    with s.work.mutex:
+        waiting = [i for i in s.work.queue if i is not None]
+    if waiting:
+        return max(s.received_s.get(ch, 0.0) - st for ch, st, *_ in waiting)
+    return max(0.0, s.received_s.get(channel, 0.0) - done_until)
 
 
 def _speaker_windows(s: Session, channel: str, audio: np.ndarray, start_s: float) -> list[tuple[float, float, str]]:

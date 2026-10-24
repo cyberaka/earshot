@@ -13,24 +13,23 @@ import java.util.function.Consumer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Component;
-
-import com.earshot.api.config.EarshotProperties;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * OpenAI-compatible chat and embeddings (LM Studio / Ollama). At most one chat request is in
- * flight, so a long answer never stacks GPU work on top of live transcription (PRD §8).
+ * OpenAI-compatible chat and embeddings: a local server (LM Studio / Ollama) or OpenAI itself,
+ * which differ only in base URL and key. At most one chat request is in flight per provider.
+ * Which features use it, if any, is up to {@link Insights} (owner decision, 2026-10-24).
  */
-@Component
-public class LlmClient {
+public class LlmClient implements ChatClient {
 
 	private static final Logger log = LoggerFactory.getLogger(LlmClient.class);
 	private final HttpClient http = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).connectTimeout(Duration.ofSeconds(5)).build();
 	private final JsonMapper json;
+	private final String name;
 	private final String baseUrl;
+	private final String apiKey;
 	private final Duration timeout;
 	private final Semaphore chatSlot = new Semaphore(1, true);
 
@@ -50,19 +49,28 @@ public class LlmClient {
 		}
 	}
 
-	public LlmClient(JsonMapper json, EarshotProperties props) {
+	public LlmClient(JsonMapper json, String name, String baseUrl, String apiKey, Duration timeout) {
 		this.json = json;
-		this.baseUrl = props.llm().baseUrl();
-		this.timeout = Duration.ofSeconds(props.llm().timeoutSeconds());
+		this.name = name;
+		this.baseUrl = baseUrl;
+		this.apiKey = apiKey == null || apiKey.isBlank() ? null : apiKey;
+		this.timeout = timeout;
 	}
 
+	@Override
+	public String name() {
+		return name;
+	}
+
+	@Override
 	public int queueDepth() {
 		return chatSlot.getQueueLength() + (chatSlot.availablePermits() == 0 ? 1 : 0);
 	}
 
+	@Override
 	public boolean available() {
 		try {
-			var res = http.send(HttpRequest.newBuilder(URI.create(baseUrl + "/models")).timeout(Duration.ofSeconds(3)).build(),
+			var res = http.send(authorized(HttpRequest.newBuilder(URI.create(baseUrl + "/models"))).timeout(Duration.ofSeconds(3)).build(),
 					HttpResponse.BodyHandlers.discarding());
 			return res.statusCode() == 200;
 		} catch (Exception e) {
@@ -70,11 +78,16 @@ public class LlmClient {
 		}
 	}
 
+	private HttpRequest.Builder authorized(HttpRequest.Builder b) {
+		return apiKey == null ? b : b.header("Authorization", "Bearer " + apiKey);
+	}
+
 	private HttpRequest request(String path, Object body) {
-		return HttpRequest.newBuilder(URI.create(baseUrl + path)).timeout(timeout).header("Content-Type", "application/json")
+		return authorized(HttpRequest.newBuilder(URI.create(baseUrl + path))).timeout(timeout).header("Content-Type", "application/json")
 				.POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body))).build();
 	}
 
+	@Override
 	public String chat(String model, List<Message> messages, boolean jsonMode) {
 		var body = new java.util.HashMap<String, Object>(Map.of("model", model, "messages", messages, "temperature", 0.2));
 		if (jsonMode) {
@@ -90,13 +103,13 @@ public class LlmClient {
 				res = http.send(request("/chat/completions", body), HttpResponse.BodyHandlers.ofString());
 			}
 			if (res.statusCode() != 200) {
-				throw new LlmUnavailable("LLM returned " + res.statusCode() + ": " + res.body(), null);
+				throw new LlmUnavailable(name + " returned " + res.statusCode() + ": " + res.body(), null);
 			}
 			String content = json.readTree(res.body()).at("/choices/0/message/content").asString();
-			log.info("event=llm_chat model={} took_ms={}", model, (System.nanoTime() - t) / 1_000_000);
+			log.info("event=llm_chat provider={} model={} took_ms={}", name, model, (System.nanoTime() - t) / 1_000_000);
 			return content;
 		} catch (IOException e) {
-			throw new LlmUnavailable("LLM offline", e);
+			throw new LlmUnavailable(name + " unreachable", e);
 		} catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
 			throw new LlmUnavailable("interrupted", e);
@@ -106,6 +119,7 @@ public class LlmClient {
 	}
 
 	/** Streams tokens to {@code onToken}; returns the whole text. */
+	@Override
 	public String chatStream(String model, List<Message> messages, Consumer<String> onToken) {
 		var body = Map.of("model", model, "messages", messages, "temperature", 0.2, "stream", true);
 		acquire();
@@ -113,7 +127,7 @@ public class LlmClient {
 		try {
 			var res = http.send(request("/chat/completions", body), HttpResponse.BodyHandlers.ofLines());
 			if (res.statusCode() != 200) {
-				throw new LlmUnavailable("LLM returned " + res.statusCode(), null);
+				throw new LlmUnavailable(name + " returned " + res.statusCode(), null);
 			}
 			res.body().forEach(line -> {
 				if (!line.startsWith("data: ") || line.equals("data: [DONE]")) {
@@ -128,7 +142,7 @@ public class LlmClient {
 			});
 			return out.toString();
 		} catch (IOException e) {
-			throw new LlmUnavailable("LLM offline", e);
+			throw new LlmUnavailable(name + " unreachable", e);
 		} catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
 			throw new LlmUnavailable("interrupted", e);
@@ -137,6 +151,7 @@ public class LlmClient {
 		}
 	}
 
+	@Override
 	public float[][] embed(String model, List<String> texts) {
 		try {
 			var res = http.send(request("/embeddings", Map.of("model", model, "input", texts)), HttpResponse.BodyHandlers.ofString());
@@ -155,7 +170,7 @@ public class LlmClient {
 			}
 			return out;
 		} catch (IOException e) {
-			throw new LlmUnavailable("embeddings offline", e);
+			throw new LlmUnavailable(name + " embeddings unreachable", e);
 		} catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
 			throw new LlmUnavailable("interrupted", e);
@@ -172,6 +187,7 @@ public class LlmClient {
 	}
 
 	/** Pulls the first JSON object out of a reply that may wrap it in prose or code fences. */
+	@Override
 	public JsonNode parseJson(String reply) {
 		int a = reply.indexOf('{');
 		int b = reply.lastIndexOf('}');

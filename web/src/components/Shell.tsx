@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
-import { api, type Health } from '../api'
+import { api, PROVIDER_LABEL, type Health, type Provider } from '../api'
 import s from './Shell.module.css'
 
 export function Logo({ size = 26 }: { size?: number }) {
@@ -21,6 +21,20 @@ export function useHealth(intervalMs = 10_000) {
     return () => { alive = false; clearInterval(t) }
   }, [intervalMs])
   return health
+}
+
+/** Optional AI at a glance: nothing when it is all off; which provider when transcript text leaves the Mac. */
+function InsightsBadge({ insights }: { insights: Health['insights'] }) {
+  if (!insights) return null
+  const { providers, sendsTextOff } = insights
+  if (providers.local.used && !providers.local.up) return <span className={s.down} title="Settings → Insights uses the local model, which is not reachable">Local AI offline</span>
+  const missingKey = (providers.openai.used && !providers.openai.keySet) || (providers.anthropic.used && !providers.anthropic.keySet)
+  if (missingKey) return <span className={s.down} title="Set OPENAI_API_KEY / ANTHROPIC_API_KEY in .env and restart">AI key missing</span>
+  if (sendsTextOff.length) {
+    const who = [...new Set(sendsTextOff.map(x => x.split('→')[1].trim()))].map(p => PROVIDER_LABEL[p as Provider] ?? p).join(', ')
+    return <span className={s.neutral} title={`Transcript text is sent for: ${sendsTextOff.join('; ')}`}>Insights: {who}</span>
+  }
+  return null
 }
 
 export default function Shell({ children }: { children: ReactNode }) {
@@ -45,8 +59,8 @@ export default function Shell({ children }: { children: ReactNode }) {
           <input id="global-search" type="search" value={q} onChange={e => setQ(e.target.value)} placeholder="Search all days: words, names, topics" />
         </form>
         <div className={s.status}>
-          <span className={allUp ? s.ok : s.down}><span className={s.dot} />{allUp ? 'Offline · all local' : health ? 'Some services down' : 'Service unreachable'}</span>
-          {health && <span className={health.llm === 'up' ? s.neutral : s.down}>{health.llm === 'up' ? 'LLM ready' : 'LLM offline'}</span>}
+          <span className={allUp ? s.ok : s.down}><span className={s.dot} />{allUp ? 'Transcription · all local' : health ? 'Some services down' : 'Service unreachable'}</span>
+          {health && <InsightsBadge insights={health.insights} />}
           {health?.disk.lowDisk && <span className={s.down}>Low disk</span>}
         </div>
       </header>
@@ -54,7 +68,7 @@ export default function Shell({ children }: { children: ReactNode }) {
         <nav aria-label="Main" className={s.nav}>
           <NavLink to="/" end className={link}>Today</NavLink>
           <NavLink to="/meeting" className={link}>Live meeting</NavLink>
-          <NavLink to="/search" className={link}>Search &amp; ask</NavLink>
+          <NavLink to="/search" className={link}>Search</NavLink>
           <NavLink to="/import" className={link}>Import</NavLink>
           <NavLink to="/people" className={link}>People</NavLink>
           <NavLink to="/settings" className={link}>Settings</NavLink>

@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 import queue
+import struct
 import threading
 import time
 from dataclasses import dataclass
@@ -57,9 +58,11 @@ class Channel:
         self.index = 0
         self.samples = 0
         self.silent_s = 0.0
-        self.q: "queue.Queue[bytes | None]" = queue.Queue()
+        # (sample index of the frame's first sample, pcm16) for the ML stream.
+        self.q: "queue.Queue[tuple[int, bytes]]" = queue.Queue()
 
     def push(self, samples: np.ndarray) -> None:
+        first = self.samples
         self.samples += len(samples)
         rms = float(np.sqrt(np.mean(samples ** 2))) if len(samples) else 0.0
         self.silent_s = self.silent_s + len(samples) / SAMPLE_RATE if rms < 0.003 else 0.0
@@ -67,7 +70,7 @@ class Channel:
         self.buffered += len(samples)
         if self.buffered >= CHUNK_S * SAMPLE_RATE:
             self.flush()
-        self.q.put((np.clip(samples, -1, 1) * 32767).astype(np.int16).tobytes())
+        self.q.put((first, (np.clip(samples, -1, 1) * 32767).astype(np.int16).tobytes()))
 
     def flush(self) -> None:
         if not self.buf:
@@ -233,18 +236,27 @@ class Recording:
         asyncio.run(self._stream_async(ch))
 
     async def _stream_async(self, ch: Channel) -> None:
-        url = f"ws://127.0.0.1:{ML_PORT}/ml/live/{self.req.meeting_id}/audio?channel={ch.name}&secret={SECRET}"
-        while not (self.stop_event.is_set() and ch.q.empty()):
+        """Each frame carries the sample index it starts at, so the ML process places it on the
+        recording's timeline even if a frame is lost or sent twice: live times always match the saved
+        file (BUGS.md B-9: before this, every reconnect lost the frame in flight and live times fell
+        up to 27 s behind the file over an hour). No keep-alive pings on this local socket: a busy ML
+        process missing one closed the stream every ~40 s."""
+        url = f"ws://127.0.0.1:{ML_PORT}/ml/live/{self.req.meeting_id}/audio?channel={ch.name}&secret={SECRET}&framing=seq"
+        pending: tuple[int, bytes] | None = None
+        while not (self.stop_event.is_set() and ch.q.empty() and pending is None):
             try:
-                async with websockets.connect(url, max_size=None) as ws:
+                async with websockets.connect(url, max_size=None, ping_interval=None) as ws:
                     while True:
-                        try:
-                            pcm = ch.q.get(timeout=0.5)
-                        except queue.Empty:
-                            if self.stop_event.is_set():
-                                return
-                            continue
-                        await ws.send(pcm)
+                        if pending is None:
+                            try:
+                                pending = ch.q.get(timeout=0.5)
+                            except queue.Empty:
+                                if self.stop_event.is_set():
+                                    return
+                                continue
+                        first, pcm = pending
+                        await ws.send(struct.pack("<q", first) + pcm)
+                        pending = None
             except Exception as e:
                 log.warning("event=ml_stream_retry channel=%s reason=%s", ch.name, type(e).__name__)
                 await asyncio.sleep(1)

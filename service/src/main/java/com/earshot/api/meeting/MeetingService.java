@@ -29,7 +29,9 @@ import org.springframework.stereotype.Service;
 import com.earshot.api.config.EarshotProperties;
 import com.earshot.api.job.JobWorker;
 import com.earshot.api.job.Jobs;
-import com.earshot.api.llm.LlmClient;
+import com.earshot.api.llm.ChatClient;
+import com.earshot.api.llm.Insights;
+import com.earshot.api.llm.Insights.Feature;
 import com.earshot.api.llm.LlmClient.Message;
 import com.earshot.api.ml.MlClient;
 import com.earshot.api.search.Indexer;
@@ -40,7 +42,11 @@ import jakarta.annotation.PostConstruct;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-/** One live meeting at a time (PRD §6): capture → ML events → DB + browser, plus rolling context. */
+/**
+ * One live meeting at a time (PRD §6): capture → ML events → DB, browser and the live transcript
+ * file. A running summary is an optional extra (Settings → Insights), from a cloud provider only:
+ * nothing local competes with live transcription for the GPU (owner decision, 2026-10-24).
+ */
 @Service
 public class MeetingService {
 
@@ -48,7 +54,8 @@ public class MeetingService {
 	private static final DateTimeFormatter HMS = DateTimeFormatter.ofPattern("HH:mm:ss");
 	private final JdbcClient db;
 	private final MlClient ml;
-	private final LlmClient llm;
+	private final Insights insights;
+	private final LiveTranscript transcript;
 	private final Settings settings;
 	private final Indexer indexer;
 	private final Jobs jobs;
@@ -62,15 +69,16 @@ public class MeetingService {
 	private final com.earshot.api.speaker.SpeakerMatcher matcher;
 	private final SpeakerNames names;
 
-	public MeetingService(JdbcClient db, MlClient ml, LlmClient llm, Settings settings, Indexer indexer, Jobs jobs, JobWorker worker,
-			MeetingSockets sockets, JsonMapper json, EarshotProperties props, com.earshot.api.conversation.ConversationService conversations,
-			com.earshot.api.speaker.SpeakerMatcher matcher, SpeakerNames names) {
+	public MeetingService(JdbcClient db, MlClient ml, Insights insights, LiveTranscript transcript, Settings settings, Indexer indexer,
+			Jobs jobs, JobWorker worker, MeetingSockets sockets, JsonMapper json, EarshotProperties props,
+			com.earshot.api.conversation.ConversationService conversations, com.earshot.api.speaker.SpeakerMatcher matcher, SpeakerNames names) {
 		this.conversations = conversations;
 		this.matcher = matcher;
 		this.names = names;
 		this.db = db;
 		this.ml = ml;
-		this.llm = llm;
+		this.insights = insights;
+		this.transcript = transcript;
 		this.settings = settings;
 		this.indexer = indexer;
 		this.jobs = jobs;
@@ -83,6 +91,7 @@ public class MeetingService {
 	@PostConstruct
 	void init() {
 		worker.setLiveMeeting(() -> live != null);
+		insights.setLiveMeeting(() -> live != null);
 	}
 
 	static final class Live {
@@ -95,6 +104,8 @@ public class MeetingService {
 		volatile Instant lastSummary = Instant.now();
 		volatile double lagS;
 		volatile double rtf;
+		volatile double rtfAvg;
+		volatile Long mlMemoryMb;
 		volatile String warning;
 		volatile String device;
 		volatile String language;
@@ -290,6 +301,7 @@ public class MeetingService {
 			log.warn("event=meeting_start_failed meeting={} reason={}", meetingId, e.getMessage());
 			throw e;
 		}
+		transcript.setCurrent(meetingId);
 		log.info("event=meeting_started meeting={} mode={} source={} resumed={}", meetingId, mode, req.source(), !newMeeting);
 		return meetingId;
 	}
@@ -352,14 +364,18 @@ public class MeetingService {
 				seg.put("text", ev.get("text").asString());
 				seg.put("live", true);
 				sockets.broadcast(l.meetingId, Map.of("type", "segment", "segment", seg));
+				transcript.changed(l.meetingId);
 				l.newSegments.incrementAndGet();
-				liveIndex.submit(() -> {
-					try {
-						indexer.indexConversation(l.conversationId);
-					} catch (Exception ex) {
-						log.warn("event=live_index_failed reason={}", ex.getMessage());
-					}
-				});
+				// Semantic search vectors: only if that option is on, and never a local model mid-meeting.
+				if (insights.usableNow(Feature.SEMANTIC_SEARCH)) {
+					liveIndex.submit(() -> {
+						try {
+							indexer.indexConversation(l.conversationId);
+						} catch (Exception ex) {
+							log.warn("event=live_index_failed reason={}", ex.getMessage());
+						}
+					});
+				}
 			}
 			case "speakers" -> {
 				String channel = ev.get("channel").asString();
@@ -398,10 +414,13 @@ public class MeetingService {
 						.query(Long.class).single() == 0);
 				sockets.broadcast(l.meetingId, Map.of("type", "relabel", "changes", changes));
 				broadcastSpeakers(l);
+				transcript.changed(l.meetingId);
 			}
 			case "status" -> {
 				l.lagS = ev.path("lag_s").asDouble();
 				l.rtf = ev.path("asr_rtf").asDouble();
+				l.rtfAvg = ev.path("asr_rtf_avg").asDouble(l.rtf);
+				transcript.lag(l.meetingId, l.lagS);
 				sockets.broadcast(l.meetingId, status(l));
 			}
 			case "error" -> sockets.broadcast(l.meetingId, Map.of("type", "warning", "message", "Transcription error: " + ev.path("message").asString()));
@@ -446,6 +465,7 @@ public class MeetingService {
 		}
 		l.clusters.values().forEach(id -> matcher.matchLive(id, "mic_system".equals(l.audioMode)));
 		broadcastSpeakers(l);
+		transcript.changed(l.meetingId);
 	}
 
 	/** After the user moves one line during a meeting: show it under its new speaker at once. */
@@ -457,6 +477,7 @@ public class MeetingService {
 		}
 		sockets.broadcast(l.meetingId, Map.of("type", "relabel", "changes", List.of(Map.of("segmentId", segmentId, "clusterId", clusterId))));
 		broadcastSpeakers(l);
+		transcript.changed(l.meetingId);
 	}
 
 	private Map<String, Object> status(Live l) {
@@ -464,7 +485,11 @@ public class MeetingService {
 		m.put("type", "status");
 		m.put("lagS", l.lagS);
 		m.put("asrRtf", l.rtf);
-		m.put("llmQueue", llm.queueDepth());
+		m.put("asrRtfAvg", l.rtfAvg);
+		m.put("mlMemoryMb", l.mlMemoryMb);
+		m.put("behind", behind(l));
+		m.put("transcriptFile", transcript.dir().resolve("current.md").toString());
+		m.put("liveSummary", insights.usableNow(Feature.LIVE_SUMMARY) ? insights.provider(Feature.LIVE_SUMMARY).id() : null);
 		m.put("elapsedS", Duration.between(l.startedAt, Instant.now()).toSeconds());
 		m.put("warning", l.warning);
 		m.put("device", l.device);
@@ -502,14 +527,19 @@ public class MeetingService {
 		if (live != l) {
 			return;
 		}
+		try {
+			l.mlMemoryMb = mlMemoryMb(ml.health());
+		} catch (Exception e) {
+			l.mlMemoryMb = null;
+		}
 		sockets.broadcast(l.meetingId, status(l));
 		boolean due = l.newSegments.get() >= settings.num("summary_every_segments")
 				|| (l.newSegments.get() > 0 && Duration.between(l.lastSummary, Instant.now()).toSeconds() >= settings.num("summary_interval_seconds"));
-		// Summaries wait while ASR is behind: transcription has priority (PRD §8).
-		if (due && l.lagS < settings.num("live_lag_skip_summary_seconds") && l.summarizing.compareAndSet(false, true)) {
+		// The running summary is optional and cloud-only (Insights rejects local for it): no GPU contention.
+		if (due && insights.usableNow(Feature.LIVE_SUMMARY) && l.summarizing.compareAndSet(false, true)) {
 			Thread.ofVirtual().start(() -> {
 				try {
-					summarize(l.meetingId, l.conversationId, settings.str("llm_live_model"));
+					summarize(l.meetingId, l.conversationId);
 					l.newSegments.set(0);
 					l.lastSummary = Instant.now();
 				} catch (Exception e) {
@@ -521,8 +551,31 @@ public class MeetingService {
 		}
 	}
 
-	/** Rolling summary, topics, decisions, action items and agenda status (PRD §6.5). */
-	public void summarize(long meetingId, long conversationId, String model) {
+	/** ML process memory: resident plus MLX's GPU buffers, active and cached (BUGS.md B-1). */
+	static Long mlMemoryMb(JsonNode health) {
+		JsonNode mem = health == null ? null : health.get("memory");
+		if (mem == null) {
+			return null;
+		}
+		return mem.path("rss_mb").asLong() + mem.path("gpu_active_mb").asLong() + mem.path("gpu_cache_mb").asLong();
+	}
+
+	/** A plain-language warning when transcription can't keep up (BUGS.md B-4), else null. */
+	String behind(Live l) {
+		double warnAt = settings.num("live_lag_warn_seconds");
+		if (l.lagS < warnAt) {
+			return null;
+		}
+		String how = l.lagS >= 120 ? "about " + Math.round(l.lagS / 60) + " min" : Math.round(l.lagS) + " s";
+		String why = l.rtfAvg > 1 ? " It is transcribing slower than people talk (" + String.format(java.util.Locale.ROOT, "%.1f", l.rtfAvg)
+				+ "× real time), so the gap will grow: close memory-heavy apps, or switch Language to English." : " It is catching up.";
+		return "The transcript is " + how + " behind the room." + why + " Nothing is lost: Stop finishes the rest from the saved audio.";
+	}
+
+	/** Rolling summary, topics, decisions, action items and agenda status (PRD §6.5), from the chosen cloud provider. */
+	public void summarize(long meetingId, long conversationId) {
+		ChatClient llm = insights.client(Feature.LIVE_SUMMARY);
+		String model = insights.model(Feature.LIVE_SUMMARY);
 		var meta = db.sql("SELECT pre_context, rolling_summary::text, started_at, audio_mode FROM meeting WHERE id = :id").param("id", meetingId)
 				.query((rs, i) -> new Object[] { rs.getString(1), rs.getString(2), rs.getTimestamp(3).toInstant(), rs.getString(4) }).single();
 		var speakerNames = names.forConversation(conversationId);
@@ -622,6 +675,8 @@ public class MeetingService {
 				l.ml.sendClose(WebSocket.NORMAL_CLOSURE, "stop");
 			}
 			live = null;
+			transcript.setCurrent(null);
+			transcript.changed(meetingId);
 		}
 		double duration = files.path("duration_s").asDouble();
 		if (duration < 1 && db.sql("SELECT count(*) FROM conversation WHERE meeting_id = :m").param("m", meetingId).query(Long.class).single() > 1) {
@@ -745,6 +800,12 @@ public class MeetingService {
 		if (l != null && l.meetingId == meetingId) {
 			out.put("status_live", status(l));
 		}
+		if ("processing".equals(row.get("status"))) {
+			// What the after-Stop pass is doing, e.g. "catching up: system, last 18 min".
+			out.put("finishing", db.sql("SELECT stage FROM job WHERE meeting_id = :m AND status IN ('queued', 'running') ORDER BY id DESC LIMIT 1")
+					.param("m", meetingId).query(String.class).optional().orElse(null));
+		}
+		out.put("transcriptFile", transcript.dir().resolve("meeting-" + meetingId + ".md").toString());
 		return out;
 	}
 }

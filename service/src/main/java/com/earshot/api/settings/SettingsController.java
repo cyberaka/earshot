@@ -25,6 +25,7 @@ public class SettingsController {
 
 	@PutMapping
 	public Map<String, Object> put(@RequestBody Map<String, Object> changes) {
+		changes.forEach(com.earshot.api.llm.Insights::validate);
 		changes.forEach(settings::put);
 		return settings.all();
 	}

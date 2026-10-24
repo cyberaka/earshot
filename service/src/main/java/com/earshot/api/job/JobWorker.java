@@ -107,12 +107,13 @@ public class JobWorker {
 			h.run(job, this);
 			jobs.finish(job.id());
 			log.info("event=job_done id={} type={} took_s={}", job.id(), job.type(), (System.nanoTime() - t) / 1_000_000_000);
-		} catch (Paused p) {
+		} catch (Paused | com.earshot.api.llm.Insights.HeldForLive p) {
+			// A meeting started: local AI work waits for it to end, like any batch job.
 			jobs.requeue(job.id(), p.getMessage());
 			log.info("event=job_paused id={} type={}", job.id(), job.type());
 		} catch (LlmClient.LlmUnavailable e) {
-			// The LLM being down never fails a job permanently (PRD §8): retry later.
-			jobs.requeue(job.id(), "LLM offline: " + e.getMessage());
+			// An AI provider being down never fails a job permanently (PRD §8): retry later.
+			jobs.requeue(job.id(), "AI provider unavailable: " + e.getMessage());
 			log.warn("event=job_waiting_for_llm id={} type={}", job.id(), job.type());
 			sleepQuietly(15_000);
 		} catch (Exception e) {

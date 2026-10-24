@@ -126,3 +126,59 @@ def test_mixed_language_hinglish_and_garbage():
     # Hindi mode writing the English it heard: keep the English pass (punctuation, casing).
     assert pick("Okay, so if I speak in English, things are better.", -0.68, "okay so if I speak in English things are better", -0.5) \
         == "Okay, so if I speak in English, things are better."
+
+
+def test_live_stop_drops_queued_audio():
+    """Stop must not keep the GPU busy on lines nobody will receive (BUGS.md B-2)."""
+    import queue as q
+    from earshot_ml import live
+    s = live.Session("t-stop")
+    live.SESSIONS["t-stop"] = s
+    for i in range(5):
+        live._enqueue(s, "system", float(i * 10), np.zeros(SAMPLE_RATE, dtype=np.float32), False)
+    live.stop("t-stop")
+    assert s.stopped and s.backlog_s == 0.0
+    assert s.work.get_nowait() is None  # only the end marker is left
+    try:
+        s.work.get_nowait()
+        assert False, "queue should be empty"
+    except q.Empty:
+        pass
+    del live.SESSIONS["t-stop"]
+
+
+def test_live_lag_is_age_of_oldest_waiting_audio():
+    """Lag counts each second once (BUGS.md B-5): 1060 s 'lag' after 1013 s of meeting can't happen."""
+    from earshot_ml import live
+    s = live.Session("t-lag")
+    s.received_s = {"system": 100.0, "mic": 100.0}
+    # Nothing waiting: how far the room moved on since the line just made.
+    assert live.lag(s, "system", 97.0) == 3.0
+    # Audio from 40 s and 70 s still queued: the oldest decides.
+    live._enqueue(s, "system", 40.0, np.zeros(SAMPLE_RATE, dtype=np.float32), False)
+    live._enqueue(s, "mic", 70.0, np.zeros(SAMPLE_RATE, dtype=np.float32), False)
+    assert live.lag(s, "system", 39.0) == 60.0
+    assert live.lag(s, "system", 39.0) <= max(s.received_s.values())
+
+
+def test_framed_stream_keeps_file_time():
+    """A lost frame becomes silence and a resent one is skipped (BUGS.md B-9)."""
+    import struct
+    from earshot_ml import live
+    s = live.Session("t-frame")
+    frame = np.zeros(1600, dtype=np.int16).tobytes()  # 0.1 s
+    live.feed_framed(s, "mic", struct.pack("<q", 0) + frame)
+    live.feed_framed(s, "mic", struct.pack("<q", 3200) + frame)   # 1600..3200 lost
+    live.feed_framed(s, "mic", struct.pack("<q", 3200) + frame)   # sent twice
+    assert abs(s.received_s["mic"] - 4800 / SAMPLE_RATE) < 1e-9
+    # A stream that starts mid-recording keeps the recording's clock.
+    live.feed_framed(s, "system", struct.pack("<q", 16000 * 60) + frame)
+    assert abs(s.received_s["system"] - 60.1) < 1e-9 and s.segmenters["system"].pos >= 16000 * 60
+
+
+def test_foreign_scripts_dropped_only_for_en_hi():
+    assert asr.foreign(seg(text="やあみし"), "en+hi")
+    assert asr.foreign(seg(text="Если"), "en")
+    assert not asr.foreign(seg(text="इनोवेशन is key"), "en+hi")
+    assert not asr.foreign(seg(text="café résumé"), "en")
+    assert not asr.foreign(seg(text="やあみし"), "auto")
