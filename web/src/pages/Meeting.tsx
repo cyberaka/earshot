@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import SummarizeButton from '../components/Summarize'
-import { api, LANGUAGES, turnBands, fmtElapsed, nearest, speakerColor, type AttachmentView, type Citation, type Devices, type MeetingSummary, type MeetingView, type NoteView, type Person, type SegmentView, type SpeakerView } from '../api'
+import { api, LANGUAGES, callReady, channelLabels, deviceRoles, turnBands, fmtElapsed, nearest, speakerColor, type AttachmentView, type Citation, type Devices, type MeetingSummary, type MeetingView, type NoteView, type Person, type SegmentView, type SpeakerView } from '../api'
 import { Answer, useAsk } from '../components/AskBox'
 import { NoteEditor, NoteItem } from '../components/Notes'
 import { NameSpeaker } from './Today'
@@ -57,21 +57,38 @@ function StartMeeting() {
     api.preflight().then(p => {
       setDevices(p.devices)
       setActive(p.activeMeetingId)
-      // An online call needs mic + system audio: preselect a multi-channel (Aggregate) input if there is one.
-      // BlackHole alone has two channels but no mic, so it is never the pick.
-      const multi = p.devices.inputs.filter(d => d.channels >= 2 && !/blackhole/i.test(d.name))
-      const pick = multi.find(d => /aggregate/i.test(d.name)) ?? multi[0]
-      if (pick) setDevice(pick.name)
+      // An online call needs mic + call audio: preselect an Aggregate Device that has both right now (Core Audio
+      // says what it is made of), a headset one before the built-in mic. An aggregate whose headset is unplugged
+      // (only BlackHole left) is never the pick.
+      const ready = callReady(p.devices.inputs)
+      const pick = ready.find(d => !/macbook|built-in/i.test(d.parts!.find(x => !/blackhole/i.test(x.name))!.name)) ?? ready[0]
+        ?? p.devices.inputs.find(d => d.channels >= 2 && !/blackhole/i.test(d.name) && !d.parts)
+      if (pick) pickDevice(pick.name, p.devices)
     }).catch(e => setError(`Capture process unreachable: ${e}`))
     api.meetings().then(setPast).catch(() => {})
   }, [])
 
+  /** Selects a device and points the mic and call channels at the right sub-devices (no channel numbers to guess). */
+  function pickDevice(name: string, devs: Devices | null = devices) {
+    setDevice(name)
+    const d = devs?.inputs.find(x => x.name === (name || devs.default_input))
+    if (!d) return
+    const r = deviceRoles(d)
+    setMicChannel(r.mic ?? 0)
+    setSystemChannel(r.call ?? (d.channels > 1 && r.mic !== null ? 1 : 0))
+  }
+
   const selected = devices?.inputs.find(d => d.name === (device || devices.default_input))
-  const hasMulti = !!devices?.inputs.some(d => d.channels >= 2 && !/blackhole/i.test(d.name))
+  const labels = selected ? channelLabels(selected) : []
+  const ready = devices ? callReady(devices.inputs) : []
+  const readyNames = ready.map(d => `“${d.name}” (${d.parts!.map(p => p.name).join(' + ')})`).join(' or ')
+  const roles = selected ? deviceRoles(selected) : { mic: null, call: null }
   // Checked here so Start never opens a device that cannot work (capture refuses it too).
   const channelProblem = !replay && devices && selected && (mode === 'mic_system'
-    ? (/blackhole/i.test(selected.name) ? 'blackholeOnly' : selected.channels < 2 ? 'twoChannels' : Math.max(micChannel, systemChannel) >= selected.channels ? 'range' : null)
-    : mode === 'mic' && micChannel >= selected.channels ? 'range' : null)
+    ? (/blackhole/i.test(selected.name) ? 'blackholeOnly'
+      : selected.parts?.length && roles.mic === null ? 'noMic'
+        : selected.channels < 2 ? 'twoChannels' : Math.max(micChannel, systemChannel) >= selected.channels ? 'range' : null)
+    : (mode === 'mic' ? micChannel : systemChannel) >= selected.channels ? 'range' : null)
   const blocked = !!channelProblem
 
   async function upload(file: File) {
@@ -85,7 +102,7 @@ function StartMeeting() {
     try {
       const body: Record<string, unknown> = { title, audioMode: mode, preContext, language, vocabulary, source: replay ? 'file' : 'device' }
       if (replay) body.files = { mic: micFile, system: systemFile }
-      else { body.device = device || null; body.micChannel = micChannel; body.systemChannel = mode === 'system' ? 0 : systemChannel }
+      else { body.device = device || null; body.micChannel = micChannel; body.systemChannel = systemChannel }
       const r = resumeId ? await api.resumeMeeting(resumeId, body) : await api.startMeeting(body)
       navigate(`/meeting/${r.meetingId}`)
     } catch (err) {
@@ -124,30 +141,46 @@ function StartMeeting() {
           {!replay && (
             <div className={s.row}>
               <label className={ui.field}>Input device
-                <select className={ui.input} value={device} onChange={e => setDevice(e.target.value)}>
+                <select className={ui.input} value={device} onChange={e => pickDevice(e.target.value)}>
                   <option value="">System default{devices?.default_input ? ` (${devices.default_input})` : ''}</option>
                   {devices?.inputs.map(d => <option key={d.index} value={d.name}>{d.name} ({d.channels} ch)</option>)}
                 </select>
               </label>
-              {mode === 'mic_system' && (
-                <>
-                  <label className={ui.field}>Mic channel
-                    <input type="number" min={0} max={(selected?.channels ?? 2) - 1} className={ui.input} value={micChannel} onChange={e => setMicChannel(Number(e.target.value))} />
-                  </label>
-                  <label className={ui.field}>System channel
-                    <input type="number" min={0} max={(selected?.channels ?? 2) - 1} className={ui.input} value={systemChannel} onChange={e => setSystemChannel(Number(e.target.value))} />
-                  </label>
-                </>
+              {/* Channels by what they are, not by number (owner, 2026-10-24). */}
+              {selected && selected.channels > 1 && mode !== 'system' && (
+                <label className={ui.field}>Your mic
+                  <select className={ui.input} value={micChannel} onChange={e => setMicChannel(Number(e.target.value))}>
+                    {labels.map((l, i) => <option key={i} value={i}>{l}</option>)}
+                  </select>
+                </label>
+              )}
+              {selected && selected.channels > 1 && mode !== 'mic' && (
+                <label className={ui.field}>Call audio
+                  <select className={ui.input} value={systemChannel} onChange={e => setSystemChannel(Number(e.target.value))}>
+                    {labels.map((l, i) => <option key={i} value={i}>{l}</option>)}
+                  </select>
+                </label>
               )}
             </div>
           )}
           {channelProblem === 'twoChannels' && (
             <div className={ui.error}>
-              “{selected!.name}” has {selected!.channels} input channel; an online call needs two: your mic and the call's audio.{' '}
-              {hasMulti
-                ? 'Pick the Aggregate Device (mic + BlackHole) above.'
-                : 'No such device on this Mac yet: install BlackHole and create an Aggregate Device (mic + BlackHole) as in the setup guide. Until then, use In-person.'}
+              “{selected!.name}” is one microphone; an online call needs your mic and the call's audio together.{' '}
+              {ready.length
+                ? <>Pick {readyNames}.</>
+                : 'No such device on this Mac yet: install BlackHole and create an Aggregate Device (mic + BlackHole) as in the setup guide.'}
+              {' '}To record only this mic, choose In-person or Listen only.
             </div>
+          )}
+          {channelProblem === 'noMic' && (
+            <div className={ui.error}>
+              “{selected!.name}” has no microphone right now, only {selected!.parts!.map(p => p.name).join(' + ')}: is its headset unplugged?{' '}
+              {ready.length ? <>Pick {readyNames}.</> : 'Plug the headset in, or use In-person.'}
+            </div>
+          )}
+          {!channelProblem && mode === 'mic_system' && selected?.parts && roles.mic !== null && roles.call !== null
+            && (micChannel === systemChannel || labels[micChannel]?.match(/blackhole/i) || !labels[systemChannel]?.match(/blackhole/i)) && (
+            <div className={ui.notice}>Check the channels: your mic is usually “{labels[roles.mic]}” and the call audio “{labels[roles.call]}”.</div>
           )}
           {channelProblem === 'blackholeOnly' && (
             <div className={ui.error}>BlackHole carries only the call's audio, not your mic. Create an Aggregate Device (your mic + BlackHole 2ch) in Audio MIDI Setup and pick that.</div>
@@ -331,13 +364,18 @@ function DeviceSwitch({ id, mode, current, onSwitched, onError }: {
   const [devices, setDevices] = useState<Devices | null>(null)
   const [busy, setBusy] = useState(false)
   useEffect(() => { api.preflight().then(p => setDevices(p.devices)).catch(() => {}) }, [])
-  // An online call needs mic + call audio on one device: only Aggregate-style inputs qualify.
-  const names = (devices?.inputs ?? []).filter(d => mode !== 'mic_system' || (d.channels >= 2 && !/blackhole/i.test(d.name))).map(d => d.name)
+  // An online call needs mic + call audio on one device: only aggregates that have both right now qualify.
+  const names = (devices?.inputs ?? []).filter(d => mode !== 'mic_system'
+    || (d.parts ? callReady([d]).length > 0 : d.channels >= 2 && !/blackhole/i.test(d.name))).map(d => d.name)
   if (!names.includes(current)) names.unshift(current)
 
   async function change(device: string) {
     setBusy(true)
-    try { onSwitched((await api.switchMeetingDevice(id, device)).device ?? device) } catch (e) { onError(String(e)) }
+    // The mic and call channels follow what the new device is made of (e.g. Aggregate Mac: mic 0, BlackHole 1).
+    const d = devices?.inputs.find(x => x.name === device)
+    const r = d ? deviceRoles(d) : { mic: null, call: null }
+    const call = r.call ?? (d && d.channels > 1 && r.mic !== null ? 1 : 0)
+    try { onSwitched((await api.switchMeetingDevice(id, device, r.mic ?? 0, call)).device ?? device) } catch (e) { onError(String(e)) }
     setBusy(false)
   }
 

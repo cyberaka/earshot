@@ -215,3 +215,13 @@ def test_batch_work_yields_to_a_live_meeting(monkeypatch):
     live.SESSIONS["m1"].stopped = True  # Stop: the next meeting's catch-up and re-runs may continue
     assert not live.active()
     app.yield_to_live()
+
+
+def test_aggregate_parts_shape():
+    # Core Audio may report nothing (no aggregates, or not macOS); whatever it reports is in channel order.
+    from earshot_ml import coreaudio
+    for name, items in coreaudio.parts().items():
+        first = 0
+        for it in items:
+            assert it["first"] == first and it["channels"] > 0 and it["name"]
+            first += it["channels"]

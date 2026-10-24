@@ -298,7 +298,10 @@ def _rescan() -> None:
 def devices():
     import sounddevice as sd
     _rescan()
-    inputs = [{"index": i, "name": d["name"], "channels": d["max_input_channels"], "sample_rate": d["default_samplerate"]}
+    from . import coreaudio
+    parts = coreaudio.parts()  # what each Aggregate Device is made of, so the UI can name its channels
+    inputs = [{"index": i, "name": d["name"], "channels": d["max_input_channels"], "sample_rate": d["default_samplerate"],
+               **({"parts": parts[d["name"]]} if d["name"] in parts else {})}
               for i, d in enumerate(sd.query_devices()) if d["max_input_channels"] > 0]
     try:
         default_input = sd.query_devices(kind="input")["name"]

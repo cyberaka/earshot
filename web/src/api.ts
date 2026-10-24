@@ -127,9 +127,42 @@ export interface MeetingView {
   parts: { part: number; conversation_id: number; recording_id: number; started_at: string; local_date: string; duration_s: number }[]
 }
 
+export interface InputDevice {
+  index: number; name: string; channels: number; sample_rate: number
+  /** An Aggregate Device's sub-devices in channel order (from Core Audio). */
+  parts?: { name: string; first: number; channels: number }[]
+}
+
 export interface Devices {
-  inputs: { index: number; name: string; channels: number; sample_rate: number }[]
+  inputs: InputDevice[]
   default_input: string | null
+}
+
+const isBlackHole = (name: string) => /blackhole/i.test(name)
+
+/** What each input channel of a device is, e.g. ["MacBook Pro Microphone", "BlackHole 2ch (left)", "BlackHole 2ch (right)"]. */
+export function channelLabels(d: InputDevice): string[] {
+  const parts = d.parts?.length ? d.parts : [{ name: d.name, first: 0, channels: d.channels }]
+  const out: string[] = []
+  for (const p of parts) {
+    for (let c = 0; c < p.channels; c++) {
+      out.push(p.channels === 2 && isBlackHole(p.name) ? `${p.name} (${c === 0 ? 'left' : 'right'})` : p.channels > 1 ? `${p.name} ${c + 1}` : p.name)
+    }
+  }
+  return out
+}
+
+/** The first mic channel and the first call-audio (BlackHole) channel of a device, when known. */
+export function deviceRoles(d: InputDevice): { mic: number | null; call: number | null } {
+  const parts = d.parts?.length ? d.parts : [{ name: d.name, first: 0, channels: d.channels }]
+  const mic = parts.find(p => !isBlackHole(p.name))
+  const call = parts.find(p => isBlackHole(p.name))
+  return { mic: mic ? mic.first : null, call: call ? call.first : null }
+}
+
+/** Devices that carry both a mic and the call's audio (what an online call needs). */
+export function callReady(inputs: InputDevice[]): InputDevice[] {
+  return inputs.filter(d => { const r = deviceRoles(d); return d.parts?.length && r.mic !== null && r.call !== null })
 }
 
 async function json<T>(res: Response): Promise<T> {
@@ -206,7 +239,8 @@ export const api = {
   switchMeetingLanguage: (id: number, language: string) => send<{ language: string | null }>('POST', `/api/meetings/${id}/language`, { language }),
   assignLine: (segmentId: number, body: { personId?: number | null; name?: string; me?: boolean; addToLibrary: boolean }) =>
     send<{ clusterId: number }>('PATCH', `/api/segments/${segmentId}/speaker`, { personId: null, name: null, me: false, ...body }),
-  switchMeetingDevice: (id: number, device: string) => send<{ device: string | null }>('POST', `/api/meetings/${id}/device`, { device }),
+  switchMeetingDevice: (id: number, device: string, micChannel?: number, systemChannel?: number) =>
+    send<{ device: string | null }>('POST', `/api/meetings/${id}/device`, { device, micChannel, systemChannel }),
   meeting: (id: number) => get<MeetingView>(`/api/meetings/${id}`),
   meetingContext: (file: File) => {
     const fd = new FormData()
