@@ -2,7 +2,7 @@
 
 **Working name:** Earshot
 **Owner:** Abhinav
-**Status:** Draft v7 (r14, 2026-10-24: AI insights run only on the user's click; r13: transcription first, AI insights optional)
+**Status:** Draft v7 (r15, 2026-10-24: Re-transcribe button, batch work yields to live meetings; r14: AI insights run only on the user's click; r13: transcription first, AI insights optional)
 **Date:** 2026-10-19, revised 2026-10-24
 **Build approach:** Implemented with Claude Code, milestone by milestone (see §12). Significant design decisions get a numbered ADR in `docs/adr/` before they are built.
 
@@ -214,6 +214,11 @@ Only for Summarize and Ask clicks (§6.8). Nothing here calls a model on its own
 
 A full re-run (re-transcribe and re-diarize each channel, as Mode A steps 6–11) remains available as an explicit job (`post_meeting_full`) and is never started automatically.
 
+**Re-transcribe (owner request, 2026-10-24):** a finished meeting has a **Re-transcribe** button: a fuller pass from the saved audio (diarization and Whisper over whole files, with more context than live). Only on the user's click, right after the meeting or at the end of the day; never automatic.
+- It is a batch job: it waits while a meeting is live, and stops within seconds when one starts (the speech engine checks before every ~30 s chunk and hands the GPU back). It carries on after that meeting's Stop. Measured: 3.8 s from the next meeting's start to the GPU being free.
+- The current transcript stays visible until the new one replaces it. Speaker names carry over by voice (library voices, and names given in this meeting at similarity ≥ 0.5); lines moved by hand are redone. Notes, screenshots and any summary stay.
+- The button says what it costs (roughly half the meeting's length of CPU and GPU) and asks once more before it starts.
+
 ### 6.6a Resuming a meeting
 **Owner request, 2026-10-19:** a stopped meeting can be resumed at any later time (minutes or days).
 - Resume records a new part of the same meeting: its own recording and conversation, so it appears in the
@@ -287,7 +292,7 @@ Earshot's core is transcription and diarization; it must work fully with every i
 ## 8. Resource Management (16 GB budget)
 
 - Whisper, pyannote, and Silero VAD live in the ML process. Load them lazily; in batch mode, unload them when idle.
-- **Live mode priority:** transcription owns the GPU during a meeting. A local LLM never runs while a meeting is live (§6.8); cloud providers may. At most one request per provider is in flight, and Q&A prompts are capped (§6.5).
+- **Live mode priority:** transcription owns the GPU during a meeting. **Why (owner, 2026-10-24):** Earshot's live transcript file, with screenshots, is what an external agent (Claude Code) reads every few seconds to give the user real-time pointers; losing real-time transcription loses the point of Earshot. Batch work (after-Stop catch-up, Re-transcribe, imports) stops when a meeting goes live and resumes after Stop. A local LLM never runs while a meeting is live (§6.8); cloud providers may. At most one request per provider is in flight, and Q&A prompts are capped (§6.5).
 - **Speech engine memory (r13):** MLX keeps freed GPU buffers for reuse; with no cap the cache grew to 16 GB in 40 hours and the Mac swapped live transcription to 1.6–100× real time. The cache is capped at 1 GB and cleared after batch work, and the speech engine's memory is shown in the meeting status bar and `/api/health`.
 - A local LLM runs out-of-process (LM Studio or Ollama). The app only calls its HTTP endpoint.
 - **Provider unavailable:** transcription, diarization, and keyword search keep working; the insight is skipped and logged, and Ask shows the reason.

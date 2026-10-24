@@ -194,3 +194,23 @@ def test_vocabulary_prompt_and_its_echo():
     assert not asr.echoes_prompt(seg(text="Thank you, Abhinav."), p)
     assert not asr.echoes_prompt(seg(text="Rapido"), p)  # one word: could be said
     assert not asr.echoes_prompt(seg(text="Abhinav, Rapido."), None)
+
+
+def test_batch_work_yields_to_a_live_meeting(monkeypatch):
+    # Back-to-back meetings (owner rule, 2026-10-24): batch work hands the GPU back once a meeting is live.
+    import pytest
+    from fastapi import HTTPException
+
+    from earshot_ml import app, live
+
+    monkeypatch.setattr(live, "SESSIONS", {})
+    assert not live.active()
+    app.yield_to_live()  # nothing live: batch work goes on
+    live.SESSIONS["m1"] = live.Session("m1")
+    assert live.active()
+    with pytest.raises(HTTPException) as e:
+        app.yield_to_live()
+    assert e.value.status_code == 409 and "live meeting" in e.value.detail
+    live.SESSIONS["m1"].stopped = True  # Stop: the next meeting's catch-up and re-runs may continue
+    assert not live.active()
+    app.yield_to_live()

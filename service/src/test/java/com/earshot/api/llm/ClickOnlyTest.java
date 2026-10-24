@@ -13,7 +13,7 @@ import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 
 /**
- * Owner rule D-10 (2026-10-24): no model call without the user's click. Every call goes through a
+ * Owner rule D-10 (2026-10-24): no model call, and no re-transcription, without the user's click. Every call goes through a
  * few entry points, and those may be called only from controllers, never from a job, a timer or the
  * live path. A new caller fails this test until it is a button.
  */
@@ -31,7 +31,10 @@ class ClickOnlyTest {
 			Pattern.compile("(enricher|Enricher)\\.summarize\\("), List.of("conversation/ConversationController.java"),
 			Pattern.compile("meetings\\.summarize\\("), List.of("meeting/MeetingController.java"),
 			Pattern.compile("\\.indexAll\\("), List.of("search/SearchController.java"),
-			Pattern.compile("\\.embedQuery\\("), List.of("search/SearchService.java"));
+			Pattern.compile("\\.embedQuery\\("), List.of("search/SearchService.java"),
+			// A full re-transcription (heavy CPU and GPU) is queued only by the Re-transcribe button.
+			Pattern.compile("meetings\\.retranscribe\\("), List.of("meeting/MeetingController.java"),
+			Pattern.compile("enqueue\\(\"post_meeting_full\""), List.of("meeting/MeetingService.java"));
 
 	private static List<String> files() throws IOException {
 		try (var s = Files.walk(SRC)) {

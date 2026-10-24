@@ -559,6 +559,45 @@ public class MeetingService {
 		return "The transcript is " + how + " behind the room." + why + " Nothing is lost: Stop finishes the rest from the saved audio.";
 	}
 
+	/**
+	 * A full pass over a finished meeting from its saved audio, only on the user's click (owner rule,
+	 * 2026-10-24): diarization and Whisper over whole files, with more context than live. Queued as a
+	 * batch job, so it never runs during a meeting and stops for one that starts (the speech engine
+	 * hands the GPU back within seconds); it resumes after that meeting's Stop. The current transcript
+	 * stays visible until the new one replaces it.
+	 */
+	public Map<String, Object> retranscribe(long meetingId) {
+		var l = live;
+		if (l != null && l.meetingId == meetingId) {
+			throw new IllegalStateException("Stop the meeting first: re-transcription works from the saved audio.");
+		}
+		String status = db.sql("SELECT status FROM meeting WHERE id = :id").param("id", meetingId).query(String.class).optional()
+				.orElseThrow(() -> new IllegalArgumentException("No such meeting."));
+		if (!"done".equals(status) && !"failed".equals(status)) {
+			throw new IllegalStateException("This meeting is still being finished; re-transcribe when it is done.");
+		}
+		var parts = db.sql("""
+				SELECT c.id, c.recording_id, c.end_offset_s - c.start_offset_s FROM conversation c
+				WHERE c.meeting_id = :m AND COALESCE(c.capture_files, (SELECT capture_files FROM meeting WHERE id = :m)) IS NOT NULL ORDER BY c.part""")
+				.param("m", meetingId).query((rs, i) -> new Object[] { rs.getLong(1), rs.getLong(2), rs.getDouble(3) }).list();
+		if (parts.isEmpty()) {
+			throw new IllegalArgumentException("This meeting has no saved audio to re-transcribe.");
+		}
+		double seconds = 0;
+		for (Object[] p : parts) {
+			long conv = (Long) p[0];
+			db.sql("UPDATE segment SET live = true WHERE conversation_id = :c").param("c", conv).update();
+			db.sql("UPDATE conversation SET stage = :s, status = 'queued' WHERE id = :c").param("s", PostMeetingJob.RETRANSCRIBING)
+					.param("c", conv).update();
+			jobs.enqueue("post_meeting_full", (Long) p[1], conv, meetingId);
+			seconds += (Double) p[2];
+		}
+		db.sql("UPDATE meeting SET status = 'processing' WHERE id = :id").param("id", meetingId).update();
+		worker.wake();
+		log.info("event=retranscribe_queued meeting={} parts={} audio_s={}", meetingId, parts.size(), Math.round(seconds));
+		return Map.of("queued", parts.size(), "audioS", seconds);
+	}
+
 	// A local model's context; a cloud model reads the whole meeting in one request.
 	private static final int LOCAL_CHARS = 24_000;
 	private static final int CLOUD_CHARS = 400_000;

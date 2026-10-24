@@ -109,8 +109,19 @@ def prepare(req: Prepare):
     return {"duration_s": round(duration, 3), "regions": regions}
 
 
+YIELDED = "paused: a live meeting is being transcribed"
+
+
+def yield_to_live() -> None:
+    """Batch work stops when a meeting goes live; the service puts the job back and resumes it after Stop."""
+    if live.active():
+        log.info("event=batch_yielded_to_live")
+        raise HTTPException(status_code=409, detail=YIELDED)
+
+
 @app.post("/ml/diarize", dependencies=[Depends(check_secret)])
 def diarize(req: Diarize):
+    yield_to_live()
     t = time.monotonic()
     samples = audio.read_span(req.path, req.start_s, req.end_s)
     regions = req.regions or [[req.start_s, req.end_s or req.start_s + len(samples) / 16000]]
@@ -153,6 +164,7 @@ def transcribe(req: Transcribe):
     out, dropped, previous = [], 0, None
     vocab = asr.vocabulary_prompt(req.vocabulary)
     for cs, ce in chunks:
+        yield_to_live()  # checked per ~30 s chunk, so a meeting that starts gets the GPU within seconds
         samples = audio.read_span(req.path, cs, ce)
         prompt = " ".join(p for p in (vocab, previous) if p) or None
         for seg in asr.engine().transcribe(samples, req.language, initial_prompt=prompt):

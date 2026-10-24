@@ -43,7 +43,15 @@ public class MlClient {
 	}
 
 	private JsonNode post(RestClient client, String path, Object body) {
-		return client.post().uri(path).body(body).retrieve().body(JsonNode.class);
+		try {
+			return client.post().uri(path).body(body).retrieve().body(JsonNode.class);
+		} catch (org.springframework.web.client.HttpClientErrorException.Conflict e) {
+			// The speech engine gave the GPU to a meeting that just went live: the job waits and resumes after Stop.
+			if (e.getResponseBodyAsString().contains("paused: a live meeting")) {
+				throw new com.earshot.api.job.JobWorker.Paused("paused for a live meeting");
+			}
+			throw e;
+		}
 	}
 
 	public JsonNode prepare(String src, String dst) {

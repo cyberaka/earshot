@@ -49,6 +49,12 @@ class Session:
 SESSIONS: dict[str, Session] = {}
 
 
+def active() -> bool:
+    """A meeting is being transcribed live: batch work (after-Stop catch-up, re-transcription,
+    imports) gives the GPU back at once (owner rule, 2026-10-24: back-to-back meetings)."""
+    return any(not s.stopped for s in SESSIONS.values())
+
+
 def start(session_id: str, language: str, max_segment_s: float, loop, seeds: dict | None = None, prompt: str | None = None) -> Session:
     s = SESSIONS.get(session_id)
     if s is None or s.stopped:

@@ -92,6 +92,12 @@ public class MeetingController {
 		return meetings.view(id);
 	}
 
+	/** The user clicked Re-transcribe: a full pass from the saved audio, as a batch job. */
+	@PostMapping("/{id}/retranscribe")
+	public Map<String, Object> retranscribe(@PathVariable long id) {
+		return meetings.retranscribe(id);
+	}
+
 	/** What a click on Summarize would send (no model call). */
 	@GetMapping("/{id}/summary")
 	public Map<String, Object> summaryEstimate(@PathVariable long id) {

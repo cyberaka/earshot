@@ -141,3 +141,4 @@ The ML sidecar (`ml/`) has no LLM code. The LLM code in the service is about 1,0
 | D-8 | Always on | **launchd agent with KeepAlive**: starts at login and restarts if it stops. |
 | D-9 | Build order | **Live path first**, then the 60-min measurement, then the Insights layer, then native Postgres. |
 | D-10 | When AI runs (owner rule, evening) | **Only on the user's click.** No timer, no loop, nothing after Stop or an import. A local call costs GPU, a cloud call costs money. Each button shows lines, ~tokens and provider before the click; a cloud summary is one request with the whole transcript. Enforced by `ClickOnlyTest`. |
+| D-11 | Re-transcribe; back-to-back meetings (owner, evening) | A **Re-transcribe** button on finished meetings, click only. All batch work hands the GPU back within seconds when a meeting goes live and resumes after Stop. The live transcript file feeds an external agent in real time; that is Earshot's purpose. |

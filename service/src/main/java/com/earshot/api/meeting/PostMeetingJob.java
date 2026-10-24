@@ -83,6 +83,10 @@ public class PostMeetingJob implements JobWorker.Handler {
 		Files.createDirectories(work);
 		String stage = db.sql("SELECT stage FROM conversation WHERE id = :id").param("id", convId).query(String.class).single();
 
+		if (RETRANSCRIBING.equals(stage)) {
+			// The user asked for a full pass (Re-transcribe): the current transcript stays visible until the new one replaces it.
+			stage = "live";
+		}
 		if ("live".equals(stage) && !"post_meeting_full".equals(job.type())) {
 			finishFromLive(job, worker, meetingId, convId, recId, mode, files, language, "1".equals(m[3]) ? m[2] : m[2] + " (continued)", day);
 			return;
@@ -102,9 +106,10 @@ public class PostMeetingJob implements JobWorker.Handler {
 			}
 			String mixed = mix(meetingId, new ArrayList<>(channelWork.values()));
 			db.sql("UPDATE recording SET work_path = :w, duration_s = :d WHERE id = :id").param("w", mixed).param("d", duration).param("id", recId).update();
-			// Idempotent on retry: drop anything a failed earlier attempt inserted.
+			// Idempotent on retry (or after a pause for a meeting): drop anything an earlier attempt inserted.
+			// The lines being replaced are marked live and keep their speakers until the end.
 			db.sql("DELETE FROM segment WHERE conversation_id = :c AND NOT live").param("c", convId).update();
-			db.sql("DELETE FROM speaker_cluster WHERE conversation_id = :c").param("c", convId).update();
+			deleteUnusedClusters(convId);
 			Map<String, Object> filters = Map.of("no_speech_prob", settings.num("no_speech_prob"), "avg_logprob", settings.num("avg_logprob"),
 					"compression_ratio", settings.num("compression_ratio"));
 			for (var e : channelWork.entrySet()) {
@@ -113,12 +118,14 @@ public class PostMeetingJob implements JobWorker.Handler {
 						vocabulary.forMeeting(meetingId));
 			}
 			matcher.match(convId);
+			keepNames(convId);
 			if ("mic_system".equals(mode) && !matcher.hasMeVoiceprint()) {
 				// Without a voiceprint the mic channel is the user (PRD §6.6).
 				long me = people.meId();
 				db.sql("UPDATE speaker_cluster SET person_id = :p WHERE conversation_id = :c AND channel = 'mic'").param("p", me).param("c", convId).update();
 			}
 			db.sql("DELETE FROM segment WHERE conversation_id = :c AND live").param("c", convId).update();
+			deleteUnusedClusters(convId);
 			db.sql("UPDATE conversation SET end_offset_s = :d, stage = 'transcribed' WHERE id = :id").param("d", duration).param("id", convId).update();
 			db.sql("DELETE FROM segment_vec WHERE segment_id NOT IN (SELECT id FROM segment)").update();
 			stage = "transcribed";
@@ -144,7 +151,10 @@ public class PostMeetingJob implements JobWorker.Handler {
 				      - GREATEST(p.started_at, c.started_at)
 				      >= 0.5 * LEAST(make_interval(secs => p.end_offset_s), make_interval(secs => c.end_offset_s - c.start_offset_s))""")
 				.param("m", meetingId).param("part", convId).update();
-		db.sql("UPDATE meeting SET status = 'done' WHERE id = :id").param("id", meetingId).update();
+		db.sql("""
+				UPDATE meeting SET status = 'done' WHERE id = :id
+				  AND NOT EXISTS (SELECT 1 FROM job WHERE meeting_id = :id AND id <> :job AND status IN ('queued', 'running'))""")
+				.param("id", meetingId).param("job", job.id()).update();
 		db.sql("UPDATE recording SET status = 'done' WHERE id = :id").param("id", recId).update();
 		exporter.exportDay(day);
 		transcript.writeNow(meetingId);
@@ -212,7 +222,10 @@ public class PostMeetingJob implements JobWorker.Handler {
 		} catch (Exception e) {
 			log.warn("event=voice_refresh_failed conversation={} reason={}", convId, e.getMessage());
 		}
-		db.sql("UPDATE meeting SET status = 'done' WHERE id = :id").param("id", meetingId).update();
+		db.sql("""
+				UPDATE meeting SET status = 'done' WHERE id = :id
+				  AND NOT EXISTS (SELECT 1 FROM job WHERE meeting_id = :id AND id <> :job AND status IN ('queued', 'running'))""")
+				.param("id", meetingId).param("job", job.id()).update();
 		db.sql("UPDATE recording SET status = 'done' WHERE id = :id").param("id", recId).update();
 		exporter.exportDay(day);
 		transcript.writeNow(meetingId);
@@ -340,6 +353,33 @@ public class PostMeetingJob implements JobWorker.Handler {
 			out.add(overlap.entrySet().stream().max(Map.Entry.comparingByValue()).map(en -> clusterOf.get(en.getKey())).orElse(null));
 		}
 		return out;
+	}
+
+	/** Conversation stage while a finished meeting is being re-transcribed on the user's click. */
+	public static final String RETRANSCRIBING = "retranscribing";
+
+	private void deleteUnusedClusters(long convId) {
+		db.sql("""
+				DELETE FROM speaker_cluster sc WHERE sc.conversation_id = :c
+				  AND NOT EXISTS (SELECT 1 FROM segment s WHERE s.speaker_cluster_id = sc.id)""").param("c", convId).update();
+	}
+
+	/**
+	 * A re-transcription finds the speakers again; a voice that sounds like one the user named in
+	 * the transcript being replaced keeps that name (same channel, similarity ≥ SAME_VOICE).
+	 */
+	private void keepNames(long convId) {
+		int n = db.sql("""
+				UPDATE speaker_cluster n SET person_id = (
+				  SELECT o.person_id FROM speaker_cluster o
+				  WHERE o.conversation_id = n.conversation_id AND o.channel = n.channel AND o.person_id IS NOT NULL
+				    AND EXISTS (SELECT 1 FROM segment s WHERE s.speaker_cluster_id = o.id AND s.live)
+				    AND 1 - (o.embedding <=> n.embedding) >= :same
+				  ORDER BY o.embedding <=> n.embedding LIMIT 1)
+				WHERE n.conversation_id = :c AND n.person_id IS NULL
+				  AND NOT EXISTS (SELECT 1 FROM segment s WHERE s.speaker_cluster_id = n.id AND s.live)""")
+				.param("c", convId).param("same", SAME_VOICE).update();
+		log.info("event=retranscribe_names_checked conversation={} clusters={}", convId, n);
 	}
 
 	private void jobs(Jobs.Job job, String stage) {

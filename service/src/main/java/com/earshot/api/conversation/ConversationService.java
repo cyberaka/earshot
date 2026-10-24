@@ -227,7 +227,10 @@ public class ConversationService {
 				.param("m", c.meetingId()).param("p", c.part()).query(Double.class).single();
 		var segments = db.sql("""
 				SELECT id, start_s, end_s, speaker_cluster_id, channel, text, live FROM segment
-				WHERE conversation_id = :c ORDER BY start_s""").param("c", id).query((rs, i) -> {
+				WHERE conversation_id = :c
+				  -- While being re-transcribed, the current lines (marked live) show until the new ones replace them.
+				  AND (live OR NOT EXISTS (SELECT 1 FROM conversation x WHERE x.id = :c AND x.stage = 'retranscribing'))
+				ORDER BY start_s""").param("c", id).query((rs, i) -> {
 			Long cid = (Long) rs.getObject(4);
 			var sp = cid == null ? null : speakers.get(cid);
 			String channel = rs.getString(5);

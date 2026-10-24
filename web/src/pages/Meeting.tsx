@@ -270,7 +270,32 @@ function fmtLag(sec: number) {
 /** The chip after Stop: what the finishing pass is doing. */
 function finishingLabel(stage?: string | null) {
   if (stage?.startsWith('catching up')) return 'Catching up…'
+  if (stage === 'transcribe') return 'Re-transcribing…'
   return 'Finishing…'
+}
+
+/**
+ * A full pass from the saved audio, only when the user clicks (owner rule, 2026-10-24). Two steps,
+ * because it replaces the transcript: lines moved by hand are redone, names carry over by voice.
+ */
+function Retranscribe({ id, minutes, onQueued, onError }: { id: number; minutes: number; onQueued: () => void; onError: (e: string) => void }) {
+  const [armed, setArmed] = useState(false)
+  const [busy, setBusy] = useState(false)
+  if (!armed) return <button type="button" className={ui.btnSmall} onClick={() => setArmed(true)}
+    title="A fuller pass over the saved audio: diarization and transcription of whole files, with more context than live">Re-transcribe</button>
+  return (
+    <div className={ui.notice} role="dialog" aria-label="Re-transcribe this meeting" style={{ flexBasis: '100%' }}>
+      <b>Re-transcribe from the saved audio?</b> A fuller pass: speakers and words over whole files, with more context than live.
+      It uses the CPU and GPU for roughly {Math.max(1, Math.round(minutes / 2))} min. If you start a meeting, it stops at once and carries on after that meeting.
+      Your current transcript stays until the new one is ready, then is replaced: speaker names carry over by voice, lines you moved by hand are redone.{' '}
+      <button type="button" className={ui.primary} disabled={busy} onClick={async () => {
+        setBusy(true)
+        try { await api.retranscribeMeeting(id); setArmed(false); onQueued() } catch (e) { onError(e instanceof Error ? e.message : String(e)) }
+        setBusy(false)
+      }}>{busy ? 'Queuing…' : 'Re-transcribe now'}</button>{' '}
+      <button type="button" className={ui.btnSmall} onClick={() => setArmed(false)}>Cancel</button>
+    </div>
+  )
 }
 
 function clockOf(sec: number) {
@@ -491,6 +516,7 @@ function LiveMeeting({ id }: { id: number }) {
             : m.status === 'done' && <>
               <Link className={ui.btn} to={`/day/${m.parts[m.parts.length - 1]?.local_date ?? localDate(m.started_at)}/${m.conversation_id}`}>Open in daily notes</Link>
               <Link className={ui.live} to={`/meeting?resume=${m.id}`}><span className={s.whiteDot} />Resume</Link>
+              <Retranscribe id={m.id} minutes={m.parts.reduce((t, p) => t + p.duration_s, 0) / 60} onQueued={reloadQuietly} onError={setError} />
             </>}
         </div>
       </header>
@@ -498,6 +524,10 @@ function LiveMeeting({ id }: { id: number }) {
       {m.live && status?.behind && <div className={ui.notice} role="status">{status.behind}</div>}
       {drop.error && <div className={ui.error}>{drop.error}</div>}
       {editingNames && <VocabularyEditor id={m.id} initial={m.vocabulary ?? ''} live={m.live} onDone={() => { setEditingNames(false); reloadQuietly() }} />}
+      {!m.live && m.status === 'processing' && m.finishing === 'transcribe' && (
+        <div className={ui.notice} role="status">Re-transcribing from the saved audio. This transcript stays until the new one is ready.
+          It stops for any meeting you start and carries on after it.</div>
+      )}
       {!m.live && m.status === 'processing' && m.finishing?.startsWith('catching up') && (
         <div className={ui.notice} role="status">Transcription was behind when you stopped. The rest is being transcribed from the saved audio ({m.finishing.replace('catching up: ', '')}); lines appear here when it is done. Nothing is lost.</div>
       )}
