@@ -1,5 +1,6 @@
 """ASREngine (PRD §10.2): mlx-whisper on Apple Silicon."""
 import math
+import re
 import threading
 from dataclasses import dataclass, field
 
@@ -155,6 +156,30 @@ def garbled(segments: list[Segment], language: str) -> bool:
             if words[i:i + n] * 4 == words[i:i + 4 * n]:
                 return True
     return False
+
+
+def vocabulary_prompt(terms: list[str] | None) -> str | None:
+    """Whisper's initial prompt from the user's names and terms (R-3): it biases spelling towards
+    them ("Abhinav", not "Aveena"). Kept short: the prompt shares Whisper's 224-token context."""
+    terms = [t.strip() for t in (terms or []) if t and t.strip()]
+    if not terms:
+        return None
+    out, size = [], 0
+    for t in dict.fromkeys(terms):
+        if size + len(t) > 400:
+            break
+        out.append(t)
+        size += len(t) + 2
+    return "Names and terms: " + ", ".join(out) + "."
+
+
+def echoes_prompt(seg: Segment, prompt: str | None) -> bool:
+    """Whisper sometimes "hears" its own prompt in silence: a line made only of prompt words is that."""
+    if not prompt:
+        return False
+    norm = lambda x: [w for w in re.sub(r"[^\w\s]", " ", x.lower()).split() if w]
+    vocab, words = set(norm(prompt)), norm(seg.text)
+    return len(words) >= 2 and all(w in vocab for w in words) or "names and terms" in seg.text.lower()
 
 
 def foreign(seg: Segment, language: str | None) -> bool:

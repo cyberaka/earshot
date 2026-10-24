@@ -70,7 +70,12 @@ public class ConversationService {
 	public record Detail(long id, long recordingId, Long meetingId, String source, LocalDate date, String startClock,
 			String endClock, double durationS, String title, List<String> summary, List<String> topics,
 			List<ActionItem> actionItems, List<SpeakerView> speakers, List<SegmentView> segments, List<NoteView> notes,
-			boolean ambient, String stage, String status, String audioMode, boolean hasAudio) {
+			List<AttachmentView> attachments, boolean ambient, String stage, String status, String audioMode, boolean hasAudio) {
+	}
+
+	/** A screenshot at a moment of the transcript (R-1). {@code path} is the file on disk, for exports. */
+	public record AttachmentView(long id, double anchorS, String clock, double elapsedS, String caption, String url, String path,
+			String originalName, String placedBy, Instant takenAt) {
 	}
 
 	public List<NoteView> notes(long conversationId) {
@@ -106,7 +111,8 @@ public class ConversationService {
 	}
 
 	static String clock(Conv c, double offsetS, DateTimeFormatter f) {
-		return c.recStart().plusMillis((long) (offsetS * 1000)).atZone(c.zone()).format(f);
+		// Rounded: 19.871999… s must read as the second it was taken, not the one before.
+		return c.recStart().plusMillis(Math.round(offsetS * 1000)).atZone(c.zone()).format(f);
 	}
 
 	public static String key(SpeakerNames.Speaker s) {
@@ -230,9 +236,14 @@ public class ConversationService {
 			return new SegmentView(rs.getLong(1), rs.getDouble(2), rs.getDouble(3), clock(c, rs.getDouble(2), HMS), name, key, cid,
 					channel, rs.getString(6), rs.getBoolean(7), base + rs.getDouble(2));
 		}).list();
+		var attachments = db.sql("""
+				SELECT id, anchor_s, caption, path, original_name, placed_by, taken_at FROM attachment WHERE conversation_id = :c ORDER BY anchor_s, id""")
+				.param("c", id).query((rs, i) -> new AttachmentView(rs.getLong(1), rs.getDouble(2), clock(c, rs.getDouble(2), HMS),
+						base + rs.getDouble(2), rs.getString(3), "/api/attachments/" + rs.getLong(1) + "/file", rs.getString(4), rs.getString(5),
+						rs.getString(6), rs.getTimestamp(7) == null ? null : rs.getTimestamp(7).toInstant())).list();
 		return new Detail(id, c.recordingId(), c.meetingId(), c.sourceType(), c.date(), clock(c, c.startOff(), HM),
 				clock(c, c.endOff(), HM), c.endOff() - c.startOff(), displayTitle(c, speakers), summary, topics, actions,
-				speakerViews, segments, notes(c), c.ambient(), c.stage(), c.status(), c.audioMode(), c.workPath() != null);
+				speakerViews, segments, notes(c), attachments, c.ambient(), c.stage(), c.status(), c.audioMode(), c.workPath() != null);
 	}
 
 	public JsonNode raw(String text) {

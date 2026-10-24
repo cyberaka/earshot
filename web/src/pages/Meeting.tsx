@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { api, LANGUAGES, PROVIDER_LABEL, fmtElapsed, nearest, speakerColor, type Citation, type Devices, type MeetingSummary, type MeetingView, type NoteView, type Person, type SegmentView, type SpeakerView } from '../api'
+import { api, LANGUAGES, PROVIDER_LABEL, fmtElapsed, nearest, speakerColor, type AttachmentView, type Citation, type Devices, type MeetingSummary, type MeetingView, type NoteView, type Person, type SegmentView, type SpeakerView } from '../api'
 import { Answer, useAsk } from '../components/AskBox'
 import { NoteEditor, NoteItem } from '../components/Notes'
 import { NameSpeaker } from './Today'
 import TimeToggle, { useTimeMode } from '../components/TimeToggle'
 import { useHealth } from '../components/Shell'
+import { ScreenshotLine, useScreenshotDrop } from '../components/Screenshots'
 import ui from '../components/ui.module.css'
 import s from './Meeting.module.css'
 
@@ -36,6 +37,7 @@ function StartMeeting() {
   const [systemChannel, setSystemChannel] = useState(1)
   const [preContext, setPreContext] = useState('')
   const [language, setLanguage] = useState('en+hi')
+  const [vocabulary, setVocabulary] = useState('')
   useEffect(() => { api.settings().then(v => { if (typeof v.language === 'string') setLanguage(v.language) }).catch(() => {}) }, [])
   const [replay, setReplay] = useState(false)
   const [micFile, setMicFile] = useState('')
@@ -80,7 +82,7 @@ function StartMeeting() {
     setBusy(true)
     setError(null)
     try {
-      const body: Record<string, unknown> = { title, audioMode: mode, preContext, language, source: replay ? 'file' : 'device' }
+      const body: Record<string, unknown> = { title, audioMode: mode, preContext, language, vocabulary, source: replay ? 'file' : 'device' }
       if (replay) body.files = { mic: micFile, system: systemFile }
       else { body.device = device || null; body.micChannel = micChannel; body.systemChannel = mode === 'system' ? 0 : systemChannel }
       const r = resumeId ? await api.resumeMeeting(resumeId, body) : await api.startMeeting(body)
@@ -162,6 +164,11 @@ function StartMeeting() {
               {LANGUAGES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
             </select>
           </label>
+          <label className={ui.field}>Names and terms (optional)
+            <input className={ui.input} value={vocabulary} onChange={e => setVocabulary(e.target.value)}
+              placeholder="e.g. Mukesh Jain, Abhinav, Hardik, Rapido, Zomato" />
+            <span className={ui.muted}>Helps spell people, companies and jargon right. Comma-separated; added to the list in Settings. {resumeId ? 'Leave empty to keep this meeting’s list.' : ''}</span>
+          </label>
         </section>
         <section className={ui.card}>
           {!resumeId && usesAgenda && (
@@ -230,6 +237,29 @@ interface LiveStatus {
 }
 
 function gb(mb: number) { return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB` }
+
+/** This meeting's names and terms (R-3); during a meeting the next sentence uses them. */
+function VocabularyEditor({ id, initial, live, onDone }: { id: number; initial: string; live: boolean; onDone: () => void }) {
+  const [text, setText] = useState(initial)
+  const [error, setError] = useState<string | null>(null)
+  return (
+    <form className={s.vocab} onSubmit={async e => {
+      e.preventDefault()
+      try { await api.switchMeetingVocabulary(id, text); onDone() } catch (err) { setError(String(err)) }
+    }}>
+      <label className={ui.field}>Names and terms for this meeting
+        <input className={ui.input} value={text} autoFocus onChange={e => setText(e.target.value)}
+          placeholder="e.g. Abhinav, Hardik, Sajal, Rapido, Capgemini" />
+        <span className={ui.muted}>Comma-separated, on top of the list in Settings. {live ? 'The next sentence uses them; earlier lines stay as they are.' : 'Used when this meeting is resumed.'}</span>
+      </label>
+      {error && <div className={ui.error}>{error}</div>}
+      <div className={s.vocabActions}>
+        <button className={ui.btnSmall}>Save</button>
+        <button type="button" className={ui.btnSmall} onClick={onDone}>Cancel</button>
+      </div>
+    </form>
+  )
+}
 
 /** "45 s", "3 min", for the lag chip. */
 function fmtLag(sec: number) {
@@ -305,6 +335,8 @@ function LiveMeeting({ id }: { id: number }) {
   const [naming, setNaming] = useState<SpeakerView | null>(null)
   const [namingLine, setNamingLine] = useState<{ id: number; text: string } | null>(null)
   const [summary, setSummary] = useState<MeetingSummary | null>(null)
+  const [shots, setShots] = useState<AttachmentView[]>([])
+  const [editingNames, setEditingNames] = useState(false)
   const [status, setStatus] = useState<LiveStatus | null>(null)
   const [stopping, setStopping] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -332,12 +364,15 @@ function LiveMeeting({ id }: { id: number }) {
     const convs = await Promise.all(mv.parts.map(p => api.conversation(p.conversation_id)))
     setSegments(convs.flatMap((c, i) => c.segments.map(x => ({ ...x, part: mv.parts[i].part }))))
     setNotes(convs.flatMap(c => c.notes))
+    setShots(convs.flatMap(c => c.attachments ?? []).sort((a, b) => a.elapsedS - b.elapsedS))
     const latest = convs[convs.length - 1]
     const seen = new Set(latest.speakers.map(x => x.name))
     setSpeakers([...latest.speakers, ...convs.slice(0, -1).flatMap(c => c.speakers).filter(x => !seen.has(x.name) && seen.add(x.name))])
   }, [id])
 
   useEffect(() => { api.people().then(p => setPeople(p.people)).catch(() => {}) }, [naming])
+  const reloadQuietly = useCallback(() => { reload().catch(e => setError(String(e))) }, [reload])
+  const drop = useScreenshotDrop(id, reloadQuietly)
 
   useEffect(() => {
     reload().catch(e => setError(String(e)))
@@ -410,8 +445,24 @@ function LiveMeeting({ id }: { id: number }) {
   const modeLabel = m.audio_mode === 'mic_system' ? 'Mic + System' : m.audio_mode === 'mic' ? 'Mic only' : 'System only'
   const hasAgenda = !!m.pre_context?.trim()
 
+  // Screenshots go before the first line that starts after them.
+  const shotsBefore = new Map<number, AttachmentView[]>()
+  const shotsAfter: AttachmentView[] = []
+  let at = 0
+  for (const shot of shots) {
+    while (at < segments.length && segments[at].elapsedS < shot.elapsedS) at++
+    if (at < segments.length) shotsBefore.set(at, [...(shotsBefore.get(at) ?? []), shot])
+    else shotsAfter.push(shot)
+  }
+  const shotLine = (shot: AttachmentView) => (
+    <ScreenshotLine key={`shot-${shot.id}`} shot={shot} editable onChanged={reloadQuietly}
+      time={timeMode === 'clock' ? shot.clock : fmtElapsed(shot.elapsedS)} />
+  )
+
   return (
-    <div className={s.liveWrap}>
+    <div className={drop.dragging ? s.liveWrapDrop : s.liveWrap} {...drop.dropProps}>
+      {drop.picker}
+      {drop.dragging && <div className={s.dropHint} aria-hidden="true">Drop screenshots to add them to the transcript</div>}
       <header className={s.liveHead}>
         <div className={s.liveTitle}>
           <span className={s.titleText}>{m.title}</span>
@@ -426,6 +477,10 @@ function LiveMeeting({ id }: { id: number }) {
           {m.live && status?.language && <LanguageSwitch id={m.id} current={status.language}
             onSwitched={language => setStatus(st => st && { ...st, language })} onError={setError} />}
           {m.live && status && <span className={status.lagS > 10 ? s.badChip : s.neutralChip} title="How old the newest line is">Lag {fmtLag(status.lagS)}</span>}
+          <button type="button" className={ui.btnSmall} onClick={() => setEditingNames(v => !v)}
+            title="Names and terms Whisper should spell right">Names &amp; terms</button>
+          <button type="button" className={ui.btnSmall} onClick={drop.pick} disabled={drop.busy > 0}
+            title="Or paste (⌘V) or drop images anywhere on this page">{drop.busy ? 'Adding…' : 'Add screenshot'}</button>
           {m.live
             ? <button className={ui.dark} onClick={stop} disabled={stopping}><span className={s.stopSq} />{stopping ? 'Stopping…' : 'Stop'}</button>
             : m.status === 'done' && <>
@@ -436,6 +491,8 @@ function LiveMeeting({ id }: { id: number }) {
       </header>
       {((m.live && status?.warning) || error) && <div className={ui.error}>{(m.live && status?.warning) || error}</div>}
       {m.live && status?.behind && <div className={ui.notice} role="status">{status.behind}</div>}
+      {drop.error && <div className={ui.error}>{drop.error}</div>}
+      {editingNames && <VocabularyEditor id={m.id} initial={m.vocabulary ?? ''} live={m.live} onDone={() => { setEditingNames(false); reloadQuietly() }} />}
       {!m.live && m.status === 'processing' && m.finishing?.startsWith('catching up') && (
         <div className={ui.notice} role="status">Transcription was behind when you stopped. The rest is being transcribed from the saved audio ({m.finishing.replace('catching up: ', '')}); lines appear here when it is done. Nothing is lost.</div>
       )}
@@ -479,6 +536,7 @@ function LiveMeeting({ id }: { id: number }) {
               const divider = i > 0 && part !== prevPart ? m.parts.find(p => p.part === part) : undefined
               return (
                 <div key={seg.id}>
+                {shotsBefore.get(i)?.map(shotLine)}
                 {divider && <div className={s.partDivider}>{resumedLabel(m.parts, divider.part)}</div>}
                 <div ref={el => { if (el) rows.current.set(seg.id, el) }} className={cited.has(seg.id) ? s.lineCited : s.line}>
                   <span className={s.clock} title={timeMode === 'clock' ? `${fmtElapsed(seg.elapsedS)} from the start` : `at ${seg.clock}`}>
@@ -499,7 +557,9 @@ function LiveMeeting({ id }: { id: number }) {
                 </div>
               )
             })}
+            {shotsAfter.map(shotLine)}
           </div>
+          <span className={s.dropNote}>Paste (⌘V) or drop a screenshot anywhere on this page: it is placed in the transcript when it was taken.</span>
           {m.live && status && (
             <div className={s.resources}>
               <span title="Time to transcribe a minute of speech, over the last minute: below 1× keeps up">Transcription speed <b className="mono">{(status.asrRtfAvg ?? status.asrRtf).toFixed(2)}× real time</b></span>

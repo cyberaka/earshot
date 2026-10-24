@@ -35,6 +35,7 @@ public class ConversationJob implements JobWorker.Handler {
 	private final JdbcClient db;
 	private final MlClient ml;
 	private final Settings settings;
+	private final com.earshot.api.settings.Vocabulary vocabulary;
 	private final SpeakerMatcher matcher;
 	private final Enricher enricher;
 	private final Indexer indexer;
@@ -43,7 +44,8 @@ public class ConversationJob implements JobWorker.Handler {
 	private final JsonMapper json;
 
 	public ConversationJob(JdbcClient db, MlClient ml, Settings settings, SpeakerMatcher matcher, Enricher enricher, Indexer indexer,
-			MarkdownExporter exporter, Jobs jobs, JsonMapper json) {
+			MarkdownExporter exporter, Jobs jobs, JsonMapper json, com.earshot.api.settings.Vocabulary vocabulary) {
+		this.vocabulary = vocabulary;
 		this.db = db;
 		this.ml = ml;
 		this.settings = settings;
@@ -145,7 +147,7 @@ public class ConversationJob implements JobWorker.Handler {
 	private void transcribe(Conv c) {
 		Map<String, Object> filters = Map.of("no_speech_prob", settings.num("no_speech_prob"), "avg_logprob", settings.num("avg_logprob"),
 				"compression_ratio", settings.num("compression_ratio"));
-		JsonNode res = ml.transcribe(c.workPath(), c.start(), c.end(), regionsIn(c), c.language(), filters);
+		JsonNode res = ml.transcribe(c.workPath(), c.start(), c.end(), regionsIn(c), c.language(), filters, vocabulary.global());
 		var turns = new ArrayList<Aligner.Turn>();
 		String turnsJson = db.sql("SELECT turns_json::text FROM conversation WHERE id = :id").param("id", c.id()).query(String.class).single();
 		if (turnsJson != null) {

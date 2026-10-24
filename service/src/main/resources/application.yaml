@@ -68,6 +68,9 @@ earshot:
     insights_embedding_local: text-embedding-nomic-embed-text-v1.5
     insights_embedding_openai: text-embedding-3-small
     language: en+hi  # en, hi, auto, or a mix tried in order (en+hi: Hindi only when English is unsure)
+    # Names and terms Whisper should spell right, comma-separated (R-3), for every recording and meeting.
+    # Meetings can add their own. Tried on the 2026-10-24 class: fixed Bharat, Sajal, Zomato, Capgemini.
+    vocabulary: ""
     conversation_gap_seconds: 120
     max_conversation_minutes: 90
     min_conversation_seconds: 20

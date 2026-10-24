@@ -74,6 +74,14 @@ public class MeetingController {
 		return meetings.switchLanguage(id, req.language());
 	}
 
+	public record VocabularyText(String vocabulary) {
+	}
+
+	@PostMapping("/{id}/vocabulary")
+	public Map<String, Object> vocabulary(@PathVariable long id, @RequestBody VocabularyText req) {
+		return meetings.switchVocabulary(id, req.vocabulary());
+	}
+
 	@PostMapping("/{id}/stop")
 	public Map<String, Object> stop(@PathVariable long id) {
 		return meetings.stop(id);

@@ -26,6 +26,7 @@ class Session:
     id: str
     language: str = "en"
     max_segment_s: float = 15.0
+    prompt: str | None = None  # names and terms (R-3), as Whisper's initial prompt
     segmenters: dict[str, StreamSegmenter] = field(default_factory=dict)
     received_s: dict[str, float] = field(default_factory=dict)
     # Next expected sample per channel, for framed streams (sample index + pcm).
@@ -48,10 +49,10 @@ class Session:
 SESSIONS: dict[str, Session] = {}
 
 
-def start(session_id: str, language: str, max_segment_s: float, loop, seeds: dict | None = None) -> Session:
+def start(session_id: str, language: str, max_segment_s: float, loop, seeds: dict | None = None, prompt: str | None = None) -> Session:
     s = SESSIONS.get(session_id)
     if s is None or s.stopped:
-        s = Session(session_id, language, max_segment_s, loop=loop)
+        s = Session(session_id, language, max_segment_s, loop=loop, prompt=prompt)
         SESSIONS[session_id] = s
         # Speakers from earlier parts of a resumed meeting.
         for channel, known in (seeds or {}).items():
@@ -152,8 +153,8 @@ def _worker(s: Session) -> None:
         t0 = time.monotonic()
         try:
             # The same hallucination filters as batch (PRD §5.2 step 8); the audio is VAD-cut speech.
-            heard = asr.engine().transcribe(audio, s.language)
-            segments = [g for g in heard if asr.keep(g, FILTERS, 1.0)]
+            heard = asr.engine().transcribe(audio, s.language, initial_prompt=s.prompt)
+            segments = [g for g in heard if asr.keep(g, FILTERS, 1.0) and not asr.echoes_prompt(g, s.prompt)]
             if len(segments) < len(heard):
                 log.info("event=live_dropped session=%s channel=%s texts=%s", s.id, channel, [g.text for g in heard if g not in segments])
         except Exception as e:

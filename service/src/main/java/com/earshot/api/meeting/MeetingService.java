@@ -56,6 +56,7 @@ public class MeetingService {
 	private final MlClient ml;
 	private final Insights insights;
 	private final LiveTranscript transcript;
+	private final com.earshot.api.settings.Vocabulary vocabulary;
 	private final Settings settings;
 	private final Indexer indexer;
 	private final Jobs jobs;
@@ -71,7 +72,9 @@ public class MeetingService {
 
 	public MeetingService(JdbcClient db, MlClient ml, Insights insights, LiveTranscript transcript, Settings settings, Indexer indexer,
 			Jobs jobs, JobWorker worker, MeetingSockets sockets, JsonMapper json, EarshotProperties props,
-			com.earshot.api.conversation.ConversationService conversations, com.earshot.api.speaker.SpeakerMatcher matcher, SpeakerNames names) {
+			com.earshot.api.conversation.ConversationService conversations, com.earshot.api.speaker.SpeakerMatcher matcher, SpeakerNames names,
+			com.earshot.api.settings.Vocabulary vocabulary) {
+		this.vocabulary = vocabulary;
 		this.conversations = conversations;
 		this.matcher = matcher;
 		this.names = names;
@@ -123,8 +126,9 @@ public class MeetingService {
 		}
 	}
 
+	/** {@code vocabulary}: this meeting's names and terms for Whisper (R-3), on top of the global list. */
 	public record Start(String title, String audioMode, String source, String device, Integer micChannel, Integer systemChannel,
-			Map<String, String> files, String preContext, String language, Double speed) {
+			Map<String, String> files, String preContext, String language, Double speed, String vocabulary) {
 	}
 
 	private static Map<String, Integer> channels(String mode, Start req) {
@@ -173,6 +177,21 @@ public class MeetingService {
 		return st;
 	}
 
+	/** Names noticed mid-meeting ("it keeps writing Aveena"): the next sentence uses the new list. */
+	public Map<String, Object> switchVocabulary(long meetingId, String text) {
+		var l = live;
+		db.sql("UPDATE meeting SET vocabulary = :v WHERE id = :id").param("v", blankToNull(text)).param("id", meetingId).update();
+		if (l != null && l.meetingId == meetingId) {
+			ml.liveVocabulary("m" + meetingId, vocabulary.forMeeting(meetingId));
+		}
+		log.info("event=meeting_vocabulary meeting={} terms={}", meetingId, com.earshot.api.settings.Vocabulary.split(text).size());
+		return Map.of("vocabulary", text == null ? "" : text);
+	}
+
+	private static String blankToNull(String s) {
+		return s == null || s.isBlank() ? null : s.strip();
+	}
+
 	public Long activeId() {
 		var l = live;
 		return l == null ? null : l.meetingId;
@@ -191,8 +210,8 @@ public class MeetingService {
 				VALUES ('meeting', :t, :s, :tz, 'live', :l, 'live') RETURNING id""").param("t", req.title()).param("s", java.sql.Timestamp.from(now))
 				.param("tz", zone.getId()).param("l", lang).query(Long.class).single();
 		long meetingId = db.sql("""
-				INSERT INTO meeting (recording_id, title, pre_context, audio_mode, started_at) VALUES (:r, :t, :p, :m, :s) RETURNING id""")
-				.param("r", recId).param("t", req.title() == null || req.title().isBlank() ? "Meeting" : req.title())
+				INSERT INTO meeting (recording_id, title, pre_context, audio_mode, started_at, vocabulary) VALUES (:r, :t, :p, :m, :s, :v) RETURNING id""")
+				.param("r", recId).param("v", blankToNull(req.vocabulary())).param("t", req.title() == null || req.title().isBlank() ? "Meeting" : req.title())
 				.param("p", req.preContext()).param("m", mode).param("s", java.sql.Timestamp.from(now)).query(Long.class).single();
 		long convId = db.sql("""
 				INSERT INTO conversation (recording_id, meeting_id, start_offset_s, end_offset_s, started_at, local_date, title, stage, status)
@@ -234,6 +253,9 @@ public class MeetingService {
 				.query(Long.class).single();
 		db.sql("UPDATE meeting SET status = 'live', audio_mode = :mode, ended_at = NULL WHERE id = :id").param("mode", mode)
 				.param("id", meetingId).update();
+		if (req.vocabulary() != null) {
+			db.sql("UPDATE meeting SET vocabulary = :v WHERE id = :id").param("v", blankToNull(req.vocabulary())).param("id", meetingId).update();
+		}
 		// Each speaker once, as their first cluster in this meeting, with their voice so far.
 		var seeds = new HashMap<String, java.util.List<Map<String, Object>>>();
 		db.sql("""
@@ -263,7 +285,7 @@ public class MeetingService {
 		live = l;
 		try {
 			String session = "m" + meetingId;
-			ml.liveStart(session, lang, settings.num("live_max_segment_seconds"), seeds);
+			ml.liveStart(session, lang, settings.num("live_max_segment_seconds"), seeds, vocabulary.forMeeting(meetingId));
 			l.ml = HttpClient.newHttpClient().newWebSocketBuilder().connectTimeout(Duration.ofSeconds(5))
 					.buildAsync(URI.create(ml.liveEventsUrl(session)), new Listener(l)).join();
 			var channels = channels(mode, req);
@@ -785,7 +807,7 @@ public class MeetingService {
 
 	public Map<String, Object> view(long meetingId) {
 		var row = db.sql("""
-				SELECT m.id, m.title, m.audio_mode, m.started_at, m.ended_at, m.status, m.rolling_summary::text AS summary, m.pre_context,
+				SELECT m.id, m.title, m.audio_mode, m.started_at, m.ended_at, m.status, m.rolling_summary::text AS summary, m.pre_context, m.vocabulary,
 				       c.id AS conversation_id, c.recording_id
 				FROM meeting m JOIN conversation c ON c.meeting_id = m.id WHERE m.id = :id ORDER BY c.part DESC LIMIT 1""")
 				.param("id", meetingId).query().singleRow();

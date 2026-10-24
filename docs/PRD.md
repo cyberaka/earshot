@@ -45,6 +45,7 @@ Transcription and diarization run offline. No audio ever leaves the machine; tra
 - **Single user**, personal use only. The output is private notes.
 - **Speech:** primarily Indian English. Hindi and code-mixed speech should transcribe at Whisper's native quality.
 - **Language default:** `en+hi` (owner decision 2026-10-20, after a Hindi/English call). Each utterance is transcribed in English; unless Whisper is sure of it (mean log probability ≥ −0.25), a quick text-only Hindi decode is checked too. Hindi is kept only when it is in Devanagari, free of decoding loops and other scripts, confident in itself (≥ −0.5) and more confident than the English; then the full Hindi pass with word timings runs. Hinglish comes out as spoken (Devanagari with English words in Latin), not as an English translation. Revised the same day after a second call: the first rule (re-run below −0.5, keep the more confident) picked Hindi decoding loops over real English, since loops score well, and missed Hinglish that English mistranslated fairly confidently. Pinned `en` translated or dropped Hindi ("Thank you." for 8 s of Hindi); `auto` decides per clip and still picked English. Overridable per import, recording and meeting (`en+hi`, `en`, `hi`, `auto`).
+- **Names and terms (owner request R-3, 2026-10-24):** a comma-separated list in Settings (`vocabulary`, for everything) plus a meeting's own list (at Start, or "Names & terms" during the meeting: the next sentence uses it) is given to Whisper as its initial prompt ("Names and terms: Abhinav, Rapido, …", ≤ ~400 characters). Lines made only of prompt words are dropped as Whisper echoing it. Trial on the 2026-10-24 class: fixed Parath → Bharat, Sejal → Sajal, Zometo → Zomato, Captiv9 → Capgemini, cross-percussion → cross-functional; "Aveena" (Abhinav) stayed; one clip lost "Hardik"; no more invented lines over silence than without. Hindi passes get no prompt (it pulls the decoder back to English).
 - **Settings:** office conversations, cafeteria, travel, in-person meeting rooms, and online calls on the laptop.
 
 ## 4. Constraints & Assumptions
@@ -238,6 +239,15 @@ A full re-run (re-transcribe and re-diarize each channel, as Mode A steps 6–11
 - B-12: The live transcript file (§6.4), current within ~1 s, for outside agents.
 - B-13: Stop never loses text: a backlog is transcribed from the saved audio (§6.6).
 - B-14: A plain-language banner when transcription falls behind (§6.4).
+- B-15: Screenshots in the transcript (§6.9).
+
+### 6.9 Screenshots (owner request R-1, 2026-10-24)
+The slide on screen at a moment of the meeting belongs next to what was said then. No AI is involved.
+- **Adding:** on the meeting page (live or finished), paste an image (⌘V), drop image files anywhere on the page, or "Add screenshot". PNG, JPEG, GIF and WebP up to 25 MB, checked by content, not by name.
+- **Placement:** a screenshot is often pasted a minute or two after it was taken. It goes at the time it was taken when that falls inside a part of the meeting (+60 s slack after the end): from a macOS / CleanShot file name ("Screenshot 2026-10-24 at 11.18.52"), else the file's modified time (sent by the browser; ignored when within 5 s of now, as for a paste). Otherwise at the time it is attached (live), or at the end of the last part (attached afterwards). The row says which.
+- **Stored** under the part's recording folder, `data/audio/meetings/<id>[/part-N]/attachments/<HHMMSS>-<name>.png`, with a row in `attachment` (conversation, path, caption, taken_at, attached_at, anchor_s, placed_by). Deleted with the meeting.
+- **Shown** among the transcript lines by time (meeting page and Today), with an optional one-line caption added or edited later. In the live transcript file and the daily notes as Markdown that renders inline: `[11:18:52] 📎 Screenshot: caption ![caption](../audio/meetings/20/attachments/111852-slide.png)`.
+- **Later (not built):** a global hotkey capturing the screen straight into Earshot; other file types (PDF, chat export).
 
 ### 6.8 Optional AI insights (owner decision, 2026-10-24)
 Earshot's core is transcription and diarization; it must work fully with every insight off, which is the default. Each insight has its own provider, chosen in Settings → Insights:
@@ -320,6 +330,7 @@ Postgres data lives in Homebrew's data directory (`/opt/homebrew/var/postgresql@
 - `qa` (id, scope_type[meeting|day|range], scope_ref, question, answer, citations_json, created_at). Citations are `(recording_id, start_s, end_s)` offsets, never segment ids.
 - `action_item` (id, conversation_id, text, owner_cluster_id nullable, done)
 - `job` (id, type, recording_id, conversation_id nullable, stage, status, attempts, error, updated_at)
+- `attachment` (id, conversation_id, path, original_name, content_type, size_bytes, caption, taken_at, attached_at, anchor_s, placed_by[taken|attached|end]) (§6.9). `meeting.vocabulary` holds a meeting's names and terms (§3).
 - `setting` (key, value_json, updated_at)
 - `segment_vec` (segment_id, model, embedding `vector`). The column is untyped so the embedding model can change; each model gets a partial HNSW index on `embedding::vector(<dim>)`. Changing the embedding model in Settings starts a re-index job, and search uses the old model until it finishes.
 - Full-text and trigram indexes on `segment.text`.
@@ -424,7 +435,8 @@ interface MlClient  { BatchResult process(Path wav, String language); LiveSessio
 - `POST /api/import` (multipart) · `PATCH /api/imports/{id}` (clock offset) · `POST /api/process/{recording_id}` · `GET /api/jobs`
 - `GET /api/days/{date}` · `GET /api/conversations/{id}` · `GET /api/audio/{recording_id}?start=&end=` (served from the working copy)
 - `PATCH /api/speaker-clusters/{id}` (assign person) · `PATCH /api/segments/{id}/speaker` (one line) · `CRUD /api/people` · `POST /api/people/{id}/merge` · `POST /api/enroll`
-- `POST /api/meetings` (start) · `POST /api/meetings/{id}/stop` · `POST /api/meetings/{id}/device` · `POST /api/meetings/{id}/language` · `WS /ws/meetings/{id}` (transcript, summary, status events)
+- `POST /api/meetings` (start) · `POST /api/meetings/{id}/stop` · `POST /api/meetings/{id}/device` · `POST /api/meetings/{id}/language` · `POST /api/meetings/{id}/vocabulary` · `WS /ws/meetings/{id}` (transcript, summary, status events)
+- `POST /api/meetings/{id}/attachments` (multipart image, `lastModified`, `caption`) · `PATCH /api/attachments/{id}` (caption) · `DELETE /api/attachments/{id}` · `GET /api/attachments/{id}/file`
 - `POST /api/ask` (scope + question, streams the answer; 409 with the reason when Ask is off or local during a live meeting)
 - `GET /api/health` (includes per-insight providers, whether keys are set, and the speech engine's memory)
 - `GET /api/search?q=&from=&to=&speaker=`

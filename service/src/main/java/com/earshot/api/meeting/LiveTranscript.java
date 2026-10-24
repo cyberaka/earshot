@@ -133,6 +133,17 @@ public class LiveTranscript {
 		Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
 	}
 
+	/** "[11:18:52] 📎 Screenshot: caption ![](../audio/meetings/20/attachments/111852-slide.png)": renders inline in Markdown. */
+	private void screenshot(StringBuilder sb, ConversationService.AttachmentView a) {
+		sb.append('[').append(a.clock()).append("] 📎 Screenshot").append(a.caption() == null ? "" : ": " + a.caption()).append(" ![")
+				.append(a.caption() == null ? "" : a.caption().replace("]", "")).append("](").append(relative(dir, a.path())).append(")\n");
+	}
+
+	/** A Markdown link from a file in {@code from} to an attachment, with forward slashes and spaces escaped. */
+	public static String relative(Path from, String path) {
+		return from.toAbsolutePath().normalize().relativize(Path.of(path).toAbsolutePath().normalize()).toString().replace('\\', '/').replace(" ", "%20");
+	}
+
 	String render(long meetingId) {
 		var m = db.sql("SELECT title, status, started_at FROM meeting WHERE id = :id").param("id", meetingId)
 				.query((rs, i) -> new Object[] { rs.getString(1), rs.getString(2), rs.getTimestamp(3).toInstant() }).single();
@@ -154,9 +165,14 @@ public class LiveTranscript {
 			var d = conversations.detail(conv);
 			n++;
 			sb.append("\n## Part ").append(n).append(" (").append(d.date()).append(' ').append(d.startClock()).append(")\n\n");
+			var shots = new java.util.ArrayDeque<>(d.attachments());
 			for (var s : d.segments()) {
+				while (!shots.isEmpty() && shots.peek().anchorS() <= s.startS()) {
+					screenshot(sb, shots.poll());
+				}
 				sb.append('[').append(s.clock()).append("] ").append(s.speaker()).append(": ").append(s.text()).append('\n');
 			}
+			shots.forEach(a -> screenshot(sb, a));
 			for (var note : conversations.notes(conv)) {
 				sb.append("[note").append(note.clock() == null ? "" : " " + note.clock()).append("] ").append(note.text().replace('\n', ' ')).append('\n');
 			}

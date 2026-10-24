@@ -48,6 +48,7 @@ class Diarize(Span):
 
 class Transcribe(Span):
     language: str | None = "en"
+    vocabulary: list[str] = []  # names and terms for Whisper's prompt (R-3)
     no_speech_prob: float = 0.6
     avg_logprob: float = -1.0
     compression_ratio: float = 2.4
@@ -61,6 +62,7 @@ class Embed(BaseModel):
 
 class LiveStart(BaseModel):
     language: str | None = "en"
+    vocabulary: list[str] = []
     max_segment_s: float = 15.0
     seeds: dict[str, list[dict]] = {}  # channel -> [{"label", "embedding"}] from earlier parts
 
@@ -149,12 +151,14 @@ def transcribe(req: Transcribe):
     filters = asr.Filters(req.no_speech_prob, req.avg_logprob, req.compression_ratio, req.min_speech_fraction)
     chunks = speech_chunks(req.regions, req.start_s, end) if req.regions else [[req.start_s, end]]
     out, dropped, previous = [], 0, None
+    vocab = asr.vocabulary_prompt(req.vocabulary)
     for cs, ce in chunks:
         samples = audio.read_span(req.path, cs, ce)
-        for seg in asr.engine().transcribe(samples, req.language, initial_prompt=previous):
+        prompt = " ".join(p for p in (vocab, previous) if p) or None
+        for seg in asr.engine().transcribe(samples, req.language, initial_prompt=prompt):
             start, stop = seg.start + cs, seg.end + cs
             frac = vad.speech_fraction(req.regions, start, stop) if req.regions else 1.0
-            if not asr.keep(seg, filters, frac):
+            if not asr.keep(seg, filters, frac) or asr.echoes_prompt(seg, vocab):
                 dropped += 1
                 continue
             out.append({"start_s": round(start, 3), "end_s": round(stop, 3), "text": seg.text,
@@ -184,12 +188,28 @@ def embed(req: Embed):
 
 @app.post("/ml/live/{session_id}/start", dependencies=[Depends(check_secret)])
 async def live_start(session_id: str, req: LiveStart):
-    live.start(session_id, req.language or "en", req.max_segment_s, asyncio.get_running_loop(), req.seeds)
+    live.start(session_id, req.language or "en", req.max_segment_s, asyncio.get_running_loop(), req.seeds,
+               asr.vocabulary_prompt(req.vocabulary))
     return {"ok": True}
 
 
 class LiveLanguage(BaseModel):
     language: str
+
+
+class LiveVocabulary(BaseModel):
+    vocabulary: list[str] = []
+
+
+@app.post("/ml/live/{session_id}/vocabulary", dependencies=[Depends(check_secret)])
+def live_vocabulary(session_id: str, req: LiveVocabulary):
+    """Names added mid-meeting: the next sentence uses them."""
+    s = live.SESSIONS.get(session_id)
+    if s is None or s.stopped:
+        raise HTTPException(status_code=404, detail="No live session.")
+    s.prompt = asr.vocabulary_prompt(req.vocabulary)
+    log.info("event=live_vocabulary session=%s terms=%d", session_id, len(req.vocabulary))
+    return {"ok": True}
 
 
 @app.post("/ml/live/{session_id}/language", dependencies=[Depends(check_secret)])

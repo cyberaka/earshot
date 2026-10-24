@@ -50,10 +50,13 @@ public class PostMeetingJob implements JobWorker.Handler {
 	private final MarkdownExporter exporter;
 	private final JsonMapper json;
 	private final LiveTranscript transcript;
+	private final com.earshot.api.settings.Vocabulary vocabulary;
 	private final Path work;
 
 	public PostMeetingJob(JdbcClient db, MlClient ml, Settings settings, SpeakerMatcher matcher, PeopleService people, Enricher enricher,
-			Indexer indexer, MarkdownExporter exporter, JsonMapper json, LiveTranscript transcript, EarshotProperties props) {
+			Indexer indexer, MarkdownExporter exporter, JsonMapper json, LiveTranscript transcript, com.earshot.api.settings.Vocabulary vocabulary,
+			EarshotProperties props) {
+		this.vocabulary = vocabulary;
 		this.db = db;
 		this.ml = ml;
 		this.settings = settings;
@@ -112,7 +115,8 @@ public class PostMeetingJob implements JobWorker.Handler {
 					"compression_ratio", settings.num("compression_ratio"));
 			for (var e : channelWork.entrySet()) {
 				worker.checkpoint();
-				processChannel(convId, e.getKey(), e.getValue(), regionsOf.get(e.getKey()), duration, language, filters);
+				processChannel(convId, e.getKey(), e.getValue(), regionsOf.get(e.getKey()), duration, language, filters,
+						vocabulary.forMeeting(meetingId));
 			}
 			matcher.match(convId);
 			if ("mic_system".equals(mode) && !matcher.hasMeVoiceprint()) {
@@ -264,7 +268,7 @@ public class PostMeetingJob implements JobWorker.Handler {
 				log.info("event=catch_up_started meeting={} channel={} from_s={} to_s={}", meetingId, ch, Math.round(from), Math.round(duration));
 				Map<String, Object> filters = Map.of("no_speech_prob", settings.num("no_speech_prob"), "avg_logprob", settings.num("avg_logprob"),
 						"compression_ratio", settings.num("compression_ratio"));
-				JsonNode t = ml.transcribe(dst, from, duration, regions, language, filters);
+				JsonNode t = ml.transcribe(dst, from, duration, regions, language, filters, vocabulary.forMeeting(meetingId));
 				// A line already heard live is not added twice (a guard: live times now match the file, BUGS.md B-9).
 				var recent = new java.util.HashSet<String>();
 				db.sql("SELECT text FROM segment WHERE conversation_id = :c AND channel = :ch AND end_s >= :from")
@@ -356,7 +360,7 @@ public class PostMeetingJob implements JobWorker.Handler {
 	}
 
 	private void processChannel(long convId, String channel, String path, JsonNode regions, double duration, String language,
-			Map<String, Object> filters) {
+			Map<String, Object> filters, List<String> terms) {
 		var regionList = new ArrayList<double[]>();
 		regions.forEach(r -> regionList.add(new double[] { r.get(0).asDouble(), r.get(1).asDouble() }));
 		if (regionList.isEmpty()) {
@@ -374,7 +378,7 @@ public class PostMeetingJob implements JobWorker.Handler {
 		}
 		var turns = new ArrayList<Aligner.Turn>();
 		d.get("turns").forEach(t -> turns.add(new Aligner.Turn(t.get("start").asDouble(), t.get("end").asDouble(), t.get("speaker").asString())));
-		JsonNode t = ml.transcribe(path, 0, duration, regionList, language, filters);
+		JsonNode t = ml.transcribe(path, 0, duration, regionList, language, filters, terms);
 		var asr = new ArrayList<List<Aligner.Word>>();
 		for (JsonNode s : t.get("segments")) {
 			var words = new ArrayList<Aligner.Word>();

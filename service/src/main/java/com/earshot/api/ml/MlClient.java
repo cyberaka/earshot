@@ -55,9 +55,19 @@ public class MlClient {
 	}
 
 	public JsonNode transcribe(String path, double start, double end, Object regions, String language, Map<String, Object> filters) {
+		return transcribe(path, start, end, regions, language, filters, List.of());
+	}
+
+	/** {@code vocabulary}: names and terms for Whisper's prompt (R-3). */
+	public JsonNode transcribe(String path, double start, double end, Object regions, String language, Map<String, Object> filters,
+			List<String> vocabulary) {
 		var body = new java.util.HashMap<String, Object>(filters);
-		body.putAll(Map.of("path", path, "start_s", start, "end_s", end, "regions", regions, "language", language));
+		body.putAll(Map.of("path", path, "start_s", start, "end_s", end, "regions", regions, "language", language, "vocabulary", vocabulary));
 		return post(ml, "/ml/transcribe", body);
+	}
+
+	public void liveVocabulary(String sessionId, List<String> vocabulary) {
+		post(ml, "/ml/live/" + sessionId + "/vocabulary", Map.of("vocabulary", vocabulary));
 	}
 
 	public float[] embed(String path, List<double[]> ranges) {
@@ -73,8 +83,9 @@ public class MlClient {
 		post(ml, "/ml/live/" + sessionId + "/language", Map.of("language", language));
 	}
 
-	public void liveStart(String sessionId, String language, double maxSegmentS, Map<String, ?> seeds) {
-		post(ml, "/ml/live/" + sessionId + "/start", Map.of("language", language, "max_segment_s", maxSegmentS, "seeds", seeds));
+	public void liveStart(String sessionId, String language, double maxSegmentS, Map<String, ?> seeds, List<String> vocabulary) {
+		post(ml, "/ml/live/" + sessionId + "/start", Map.of("language", language, "max_segment_s", maxSegmentS, "seeds", seeds,
+				"vocabulary", vocabulary));
 	}
 
 	public void liveStop(String sessionId) {

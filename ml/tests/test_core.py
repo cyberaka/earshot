@@ -182,3 +182,15 @@ def test_foreign_scripts_dropped_only_for_en_hi():
     assert not asr.foreign(seg(text="इनोवेशन is key"), "en+hi")
     assert not asr.foreign(seg(text="café résumé"), "en")
     assert not asr.foreign(seg(text="やあみし"), "auto")
+
+
+def test_vocabulary_prompt_and_its_echo():
+    """R-3: names go to Whisper as a prompt; a line made only of prompt words is Whisper repeating it."""
+    p = asr.vocabulary_prompt(["Abhinav", " Rapido ", "Abhinav", ""])
+    assert p == "Names and terms: Abhinav, Rapido."
+    assert asr.vocabulary_prompt([]) is None
+    assert asr.echoes_prompt(seg(text="Abhinav, Rapido."), p)
+    assert asr.echoes_prompt(seg(text="Names and terms"), p)
+    assert not asr.echoes_prompt(seg(text="Thank you, Abhinav."), p)
+    assert not asr.echoes_prompt(seg(text="Rapido"), p)  # one word: could be said
+    assert not asr.echoes_prompt(seg(text="Abhinav, Rapido."), None)

@@ -6,8 +6,8 @@ For the post-call huddle on 2026-10-24, start with **[Huddle summary](#huddle-su
 
 | # | Bug | Severity | Status |
 |---|-----|----------|--------|
-| B-14 | Remote speakers merged or switching numbers (a participant's question labelled as the instructor) | Medium | Open: needs a decision (Zoom name OCR or more voiceprints) |
-| B-13 | Names and jargon misheard ("Aveena" for Abhinav, "Repito" for Rapido) | Medium | Open: needs a decision (vocabulary prompt) |
+| B-14 | Remote speakers merged or switching numbers (a participant's question labelled as the instructor) | Medium | Open: R-2 on hold |
+| B-13 | Names and jargon misheard ("Aveena" for Abhinav, "Repito" for Rapido) | Medium | **Mostly fixed** 2026-10-24: vocabulary list (R-3), when filled in |
 | B-12 | Text in other writing systems ("やあみし") | Low | **Fixed** 2026-10-24 |
 | B-11 | Live transcription skipped the hallucination filters ("Thank you." / "Bye." in silence) | Medium | **Fixed** 2026-10-24 (partly: real "Okay."s score the same as invented ones) |
 | B-10 | Gap-fill script: duplicated passages and wrong confidence values in meeting 20 | Low | **Fixed** 2026-10-24 |
@@ -36,6 +36,8 @@ For the post-call huddle on 2026-10-24, start with **[Huddle summary](#huddle-su
   - Cap line length at speaker changes inside long lines.
 
 ## B-13: Names and jargon misheard
+
+- **Mostly fixed (2026-10-24):** names and terms from Settings and the meeting go to Whisper as its prompt (R-3). In the trial it fixed Bharat, Sajal, Zomato, Capgemini and cross-functional, but not "Aveena"; one clip lost "Hardik". A line of only prompt words is dropped. It only helps when the list is filled in.
 
 - **Seen:** same review.
   - Names: Abhinav → "Aveena" / "Abhinah" / "Aminav"; Hardik → "Hathik"; Bharat → "Parath"; Sajal → "Sejal".

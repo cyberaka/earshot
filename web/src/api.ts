@@ -35,8 +35,14 @@ export interface ActionItem { id: number; text: string; owner: string | null; do
 export interface ConversationDetail {
   id: number; recordingId: number; meetingId: number | null; source: string; date: string
   startClock: string; endClock: string; durationS: number; title: string; summary: string[]; topics: string[]
-  actionItems: ActionItem[]; speakers: SpeakerView[]; segments: SegmentView[]; notes: NoteView[]; ambient: boolean
+  actionItems: ActionItem[]; speakers: SpeakerView[]; segments: SegmentView[]; notes: NoteView[]; attachments: AttachmentView[]; ambient: boolean
   stage: string; status: string; audioMode: string | null; hasAudio: boolean
+}
+
+/** A screenshot at a moment of the transcript (R-1). placedBy: when it was taken, attached, or at the end. */
+export interface AttachmentView {
+  id: number; anchorS: number; clock: string; elapsedS: number; caption: string | null; url: string
+  originalName: string | null; placedBy: 'taken' | 'attached' | 'end'; takenAt: string | null
 }
 
 export interface Citation { n: number; recordingId: number; conversationId: number; startS: number; endS: number; clock: string; speaker: string }
@@ -98,7 +104,7 @@ export interface MeetingSummary {
 export interface MeetingView {
   id: number; title: string; audio_mode: string; started_at: string; ended_at: string | null; status: string
   summary: MeetingSummary | null; pre_context: string | null; conversation_id: number; recording_id: number; live: boolean
-  finishing?: string | null; transcriptFile?: string
+  finishing?: string | null; transcriptFile?: string; vocabulary?: string | null
   parts: { part: number; conversation_id: number; recording_id: number; started_at: string; local_date: string; duration_s: number }[]
 }
 
@@ -187,6 +193,18 @@ export const api = {
     fd.append('file', file)
     return fetch('/api/meetings/context', { method: 'POST', body: fd }).then(r => json<{ text: string }>(r))
   },
+  switchMeetingVocabulary: (id: number, vocabulary: string) => send<{ vocabulary: string }>('POST', `/api/meetings/${id}/vocabulary`, { vocabulary }),
+  addAttachment: (meetingId: number, file: File, caption?: string) => {
+    const fd = new FormData()
+    fd.append('file', file, file.name || 'screenshot.png')
+    // When the file was last modified: for a dropped screenshot, about when it was taken.
+    fd.append('lastModified', String(file.lastModified))
+    if (caption) fd.append('caption', caption)
+    return fetch(`/api/meetings/${meetingId}/attachments`, { method: 'POST', body: fd })
+      .then(r => json<{ id: number; conversationId: number; placedBy: string }>(r))
+  },
+  captionAttachment: (id: number, caption: string) => send('PATCH', `/api/attachments/${id}`, { caption }),
+  deleteAttachment: (id: number) => send('DELETE', `/api/attachments/${id}`),
   qaHistory: (scopeType: string, scopeRef: string) =>
     get<{ id: number; question: string; answer: string; citations: string }[]>(`/api/qa?scopeType=${scopeType}&scopeRef=${encodeURIComponent(scopeRef)}`),
 }

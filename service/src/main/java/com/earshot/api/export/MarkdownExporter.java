@@ -30,6 +30,12 @@ public class MarkdownExporter {
 		this.notes = props.data().resolve("notes");
 	}
 
+	private void screenshot(StringBuilder md, ConversationService.AttachmentView a) {
+		md.append("- **").append(a.clock()).append("** 📎 Screenshot").append(a.caption() == null ? "" : ": " + a.caption()).append("\n  ![")
+				.append(a.caption() == null ? "" : a.caption().replace("]", "")).append("](")
+				.append(com.earshot.api.meeting.LiveTranscript.relative(notes, a.path())).append(")\n");
+	}
+
 	public Path path(LocalDate day) {
 		return notes.resolve(day + ".md");
 	}
@@ -64,8 +70,15 @@ public class MarkdownExporter {
 							.append(n.text().strip().replace("\n", "\n  ")).append('\n'));
 				}
 				md.append("**Transcript**\n");
-				d.segments().forEach(s -> md.append("- **").append(s.clock()).append(' ').append(s.speaker()).append(":** ")
-						.append(s.text()).append('\n'));
+				// Screenshots (R-1) sit among the lines at the moment they were taken.
+				var shots = new java.util.ArrayDeque<>(d.attachments());
+				for (var s : d.segments()) {
+					while (!shots.isEmpty() && shots.peek().anchorS() <= s.startS()) {
+						screenshot(md, shots.poll());
+					}
+					md.append("- **").append(s.clock()).append(' ').append(s.speaker()).append(":** ").append(s.text()).append('\n');
+				}
+				shots.forEach(a -> screenshot(md, a));
 			}
 			Files.writeString(path(day), md);
 			log.info("event=exported day={} conversations={}", day, convs.size());

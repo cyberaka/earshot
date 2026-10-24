@@ -1,0 +1,15 @@
+.shot { display: flex; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border-soft); }
+.clock { flex: none; width: 74px; font-family: var(--mono); font-size: 12.5px; color: var(--muted); padding-top: 2px; }
+.body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.thumb { display: block; max-width: min(100%, 520px); max-height: 300px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2, var(--border-soft)); }
+.meta { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: 14px; }
+.caption { color: var(--ink-2); overflow-wrap: anywhere; }
+.captionForm { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.captionForm input { flex: 1 1 220px; }
+.link { border: 0; background: none; padding: 4px 2px; color: var(--muted); font-size: 12.5px; cursor: pointer; text-decoration: underline; }
+.link:hover { color: var(--ink); }
+.danger { composes: link; color: var(--danger); }
+@media (max-width: 640px) {
+  .shot { flex-direction: column; gap: 4px; }
+  .clock { width: auto; }
+}

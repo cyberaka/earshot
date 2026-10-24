@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api, nearest, fmtDuration, fmtElapsed, speakerColor, todayLocal, type ConversationDetail, type DayView, type NoteView, type Person, type SpeakerView } from '../api'
 import AskBox from '../components/AskBox'
 import { useHealth } from '../components/Shell'
+import { ScreenshotLine } from '../components/Screenshots'
 import TimeToggle, { useTimeMode } from '../components/TimeToggle'
 import NotesSection, { NoteEditor, NoteItem } from '../components/Notes'
 import ui from '../components/ui.module.css'
@@ -238,11 +239,15 @@ function Conversation({ id, onChanged, seek, onSeekDone }: { id: number; onChang
           </div>
           <audio ref={audio} hidden />
           <div>
-            {d.segments.map(seg => {
+            {d.segments.map((seg, i) => {
               const speakerById = new Map(d.speakers.map(sp => [sp.clusterId, sp]))
               const col = speakerColor(seg.key)
+              // Screenshots (R-1) go before the first line that starts after them; the rest after the last line.
+              const shots = (d.attachments ?? []).filter(a => a.anchorS <= seg.startS && (i === 0 || a.anchorS > d.segments[i - 1].startS))
               return (
                 <div key={seg.id}>
+                {shots.map(a => <ScreenshotLine key={`shot-${a.id}`} shot={a} editable onChanged={load}
+                  time={timeMode === 'clock' ? a.clock : fmtElapsed(a.elapsedS)} />)}
                 <div ref={el => { if (el) rows.current.set(seg.id, el) }} className={highlight === seg.id ? s.lineCited : s.line}>
                   {markMe
                     ? <input type="checkbox" aria-label={`Mark line at ${seg.clock} as me`} className={s.markBox} checked={markMe.has(seg.id)}
@@ -277,6 +282,8 @@ function Conversation({ id, onChanged, seek, onSeekDone }: { id: number; onChang
                 </div>
               )
             })}
+            {(d.attachments ?? []).filter(a => a.anchorS > d.segments[d.segments.length - 1].startS).map(a =>
+              <ScreenshotLine key={`shot-${a.id}`} shot={a} editable onChanged={load} time={timeMode === 'clock' ? a.clock : fmtElapsed(a.elapsedS)} />)}
           </div>
         </section>
       )}
