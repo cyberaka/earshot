@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import SummarizeButton from '../components/Summarize'
-import { api, LANGUAGES, fmtElapsed, nearest, speakerColor, type AttachmentView, type Citation, type Devices, type MeetingSummary, type MeetingView, type NoteView, type Person, type SegmentView, type SpeakerView } from '../api'
+import { api, LANGUAGES, turnBands, fmtElapsed, nearest, speakerColor, type AttachmentView, type Citation, type Devices, type MeetingSummary, type MeetingView, type NoteView, type Person, type SegmentView, type SpeakerView } from '../api'
 import { Answer, useAsk } from '../components/AskBox'
 import { NoteEditor, NoteItem } from '../components/Notes'
 import { NameSpeaker } from './Today'
@@ -274,6 +274,22 @@ function finishingLabel(stage?: string | null) {
   return 'Finishing…'
 }
 
+/** The live transcript file's full path, to copy into the agent that reads it (Earshot's main output). */
+function TranscriptFile({ path, live }: { path: string; live: boolean }) {
+  const [copied, setCopied] = useState(false)
+  async function copy() {
+    try { await navigator.clipboard.writeText(path); setCopied(true); setTimeout(() => setCopied(false), 2000) } catch { /* select the text instead */ }
+  }
+  return (
+    <div className={s.fileBar}>
+      <span>{live ? 'Live transcript file' : 'Transcript file'}</span>
+      <span className={s.filePath}>{path}</span>
+      <button type="button" className={ui.btnSmall} onClick={copy} aria-live="polite">{copied ? 'Copied' : 'Copy path'}</button>
+      {live && <span className={ui.muted}>Updated as people speak; <span className="mono">current.md</span> in the same folder always holds the meeting being recorded.</span>}
+    </div>
+  )
+}
+
 /**
  * A full pass from the saved audio, only when the user clicks (owner rule, 2026-10-24). Two steps,
  * because it replaces the transcript: lines moved by hand are redone, names carry over by voice.
@@ -379,7 +395,8 @@ function LiveMeeting({ id }: { id: number }) {
   const partBase = useRef(0)
   const [timeMode, setTimeMode] = useTimeMode()
   const rows = useRef<Map<number, HTMLDivElement>>(new Map())
-  const follow = useRef(true)
+  // Auto-scroll (owner, 2026-10-24): on by default; only the toggle (or jumping to a citation) turns it off.
+  const [autoScroll, setAutoScroll] = useState(true)
   const { items, setItems, busy, run } = useAsk('meeting', String(id))
   const health = useHealth(30_000)
   const askWith = health?.insights?.features.ask ?? 'off'
@@ -448,13 +465,13 @@ function LiveMeeting({ id }: { id: number }) {
   }, [m, reload])
 
   useEffect(() => {
-    if (follow.current && listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight
-  }, [segments])
+    if (autoScroll && listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight
+  }, [segments, autoScroll])
 
   function onCite(c: Citation | { startS: number }) {
     const target = nearest(segments, c.startS)
     if (!target) return
-    follow.current = false
+    setAutoScroll(false)
     setCited(new Set([target.id]))
     rows.current.get(target.id)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   }
@@ -526,6 +543,7 @@ function LiveMeeting({ id }: { id: number }) {
             </>}
         </div>
       </header>
+      {m.transcriptFile && <TranscriptFile path={m.transcriptFile} live={m.live} />}
       {((m.live && status?.warning) || error) && <div className={ui.error}>{(m.live && status?.warning) || error}</div>}
       {m.live && status?.behind && <div className={ui.notice} role="status">{status.behind}</div>}
       {drop.error && <div className={ui.error}>{drop.error}</div>}
@@ -542,7 +560,13 @@ function LiveMeeting({ id }: { id: number }) {
         <section aria-label="Transcript" className={s.transcript}>
           <div className={s.panelHead}>
             <h2 className={s.h2}>{m.live ? 'Live transcript' : 'Transcript'}</h2>
-            <TimeToggle mode={timeMode} onChange={setTimeMode} />
+            <span className={s.headTools}>
+              {m.live && <button type="button" className={autoScroll ? s.autoOn : s.autoOff} aria-pressed={autoScroll}
+                onClick={() => setAutoScroll(v => !v)}
+                title={autoScroll ? 'Keeps the newest line in view. Turn off to scroll back freely.' : 'Turn on to follow the newest line.'}>
+                Auto-scroll {autoScroll ? 'on' : 'off'}</button>}
+              <TimeToggle mode={timeMode} onChange={setTimeMode} />
+            </span>
           </div>
           {speakers.length > 0 && (
             <div className={s.speakerBar}>
@@ -564,12 +588,9 @@ function LiveMeeting({ id }: { id: number }) {
                 onSaved={() => { setNaming(null); if (!m.live) reload().catch(() => {}) }} />
             </div>
           )}
-          <div className={s.lines} ref={listRef} onScroll={e => {
-            const el = e.currentTarget
-            follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60
-          }}>
+          <div className={s.lines} ref={listRef}>
             {segments.length === 0 && <div className={ui.muted}>{m.live ? 'Listening… text appears a few seconds after each sentence.' : 'No transcript.'}</div>}
-            {segments.map((seg, i) => {
+            {(() => { const bands = turnBands(segments, x => x.clusterId ?? x.key); return segments.map((seg, i) => {
               // Names come from the speaker list, so naming or regrouping relabels every line at once.
               const sp = seg.clusterId !== null ? speakerById.get(seg.clusterId) : undefined
               const part = (seg as SegmentView & { part?: number }).part ?? 1
@@ -579,14 +600,14 @@ function LiveMeeting({ id }: { id: number }) {
                 <div key={seg.id}>
                 {shotsBefore.get(i)?.map(shotLine)}
                 {divider && <div className={s.partDivider}>{resumedLabel(m.parts, divider.part)}</div>}
-                <div ref={el => { if (el) rows.current.set(seg.id, el) }} className={cited.has(seg.id) ? s.lineCited : s.line}>
+                <div ref={el => { if (el) rows.current.set(seg.id, el) }} className={cited.has(seg.id) ? s.lineCited : bands[i] ? s.lineBand : s.line}>
                   <span className={s.clock} title={timeMode === 'clock' ? `${fmtElapsed(seg.elapsedS)} from the start` : `at ${seg.clock}`}>
                     {timeMode === 'clock' ? seg.clock : fmtElapsed(seg.elapsedS)}
                   </span>
                   {sp
-                    ? <button className={s.whoBtn} style={{ color: speakerColor(sp.key).fg }} title="Who said this line?"
+                    ? <button className={s.whoBtn} style={{ color: speakerColor(sp.key).fg }} title={`${sp.name}: who said this line?`}
                       onClick={() => { setNaming(sp); setNamingLine({ id: seg.id, text: seg.text }) }}>{sp.name}</button>
-                    : <span className={s.who} style={{ color: speakerColor(seg.key).fg }}>{seg.speaker}</span>}
+                    : <span className={s.who} style={{ color: speakerColor(seg.key).fg }} title={seg.speaker}>{seg.speaker}</span>}
                   <span className={s.text}>{seg.text}</span>
                 </div>
                 {naming && namingLine?.id === seg.id && (
@@ -597,7 +618,7 @@ function LiveMeeting({ id }: { id: number }) {
                 )}
                 </div>
               )
-            })}
+            }) })()}
             {shotsAfter.map(shotLine)}
           </div>
           <span className={s.dropNote}>Paste (⌘V) or drop a screenshot anywhere on this page: it is placed in the transcript when it was taken.</span>
@@ -606,7 +627,6 @@ function LiveMeeting({ id }: { id: number }) {
               <span title="Time to transcribe a minute of speech, over the last minute: below 1× keeps up">Transcription speed <b className="mono">{(status.asrRtfAvg ?? status.asrRtf).toFixed(2)}× real time</b></span>
               {status.mlMemoryMb != null && <span title="Speech engine memory, including GPU buffers">Speech engine <b className="mono">{gb(status.mlMemoryMb)}</b></span>}
               <span>Audio on disk <b className="mono">✓</b></span>
-              {status.transcriptFile && <span title={status.transcriptFile}>Transcript file <b className="mono">data/live/current.md</b></span>}
             </div>
           )}
         </section>

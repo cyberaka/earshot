@@ -3,6 +3,7 @@
   --bg: #F3F5F7;
   --surface: #FFFFFF;
   --surface-2: #F8F9FB;
+  --band: #F0F3F8; /* every other speaker turn in a transcript */
   --border: #DDE2E8;
   --border-soft: #EEF1F5;
   --border-strong: #C4CBD4;
@@ -34,6 +35,7 @@
     --bg: #0F1419;
     --surface: #171D24;
     --surface-2: #1C232B;
+    --band: #202934;
     --border: #2A333D;
     --border-soft: #222A33;
     --border-strong: #3A4552;

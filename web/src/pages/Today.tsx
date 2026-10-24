@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { api, nearest, fmtDuration, fmtElapsed, speakerColor, todayLocal, type ConversationDetail, type DayView, type Provider, type NoteView, type Person, type SpeakerView } from '../api'
+import { api, nearest, turnBands, fmtDuration, fmtElapsed, speakerColor, todayLocal, type ConversationDetail, type DayView, type Provider, type NoteView, type Person, type SpeakerView } from '../api'
 import AskBox from '../components/AskBox'
 import SummarizeButton from '../components/Summarize'
 import { useHealth } from '../components/Shell'
@@ -252,7 +252,7 @@ function Conversation({ id, onChanged, seek, onSeekDone, summaryWith, liveNow }:
           </div>
           <audio ref={audio} hidden />
           <div>
-            {d.segments.map((seg, i) => {
+            {(() => { const bands = turnBands(d.segments, x => x.clusterId ?? x.key); return d.segments.map((seg, i) => {
               const speakerById = new Map(d.speakers.map(sp => [sp.clusterId, sp]))
               const col = speakerColor(seg.key)
               // Screenshots (R-1) go before the first line that starts after them; the rest after the last line.
@@ -261,7 +261,7 @@ function Conversation({ id, onChanged, seek, onSeekDone, summaryWith, liveNow }:
                 <div key={seg.id}>
                 {shots.map(a => <ScreenshotLine key={`shot-${a.id}`} shot={a} editable onChanged={load}
                   time={timeMode === 'clock' ? a.clock : fmtElapsed(a.elapsedS)} />)}
-                <div ref={el => { if (el) rows.current.set(seg.id, el) }} className={highlight === seg.id ? s.lineCited : s.line}>
+                <div ref={el => { if (el) rows.current.set(seg.id, el) }} className={highlight === seg.id ? s.lineCited : bands[i] ? s.lineBand : s.line}>
                   {markMe
                     ? <input type="checkbox" aria-label={`Mark line at ${seg.clock} as me`} className={s.markBox} checked={markMe.has(seg.id)}
                       onChange={e => { const n = new Set(markMe); if (e.target.checked) n.add(seg.id); else n.delete(seg.id); setMarkMe(n) }} />
@@ -294,7 +294,7 @@ function Conversation({ id, onChanged, seek, onSeekDone, summaryWith, liveNow }:
                 )}
                 </div>
               )
-            })}
+            }) })()}
             {(d.attachments ?? []).filter(a => a.anchorS > d.segments[d.segments.length - 1].startS).map(a =>
               <ScreenshotLine key={`shot-${a.id}`} shot={a} editable onChanged={load} time={timeMode === 'clock' ? a.clock : fmtElapsed(a.elapsedS)} />)}
           </div>

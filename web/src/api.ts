@@ -93,6 +93,21 @@ export interface Job {
   conversation_stage: string | null; is_ambient: boolean | null; time_zone: string | null; local_date: string | null
 }
 
+/**
+ * Alternate shading per speaker turn (owner, 2026-10-24): true for lines in every other turn, so the
+ * eye sees where one speaker stops and the next begins.
+ */
+export function turnBands<T>(items: T[], who: (x: T) => string | number | null): boolean[] {
+  let band = false
+  let prev: string | number | null | undefined
+  return items.map((x, i) => {
+    const k = who(x)
+    if (i > 0 && k !== prev) band = !band
+    prev = k
+    return band
+  })
+}
+
 export interface MeetingSummary {
   summary: string[]; topics: string[]
   decisions: { text: string; owner?: string; citations: { startS: number; endS: number; clock: string }[] }[]

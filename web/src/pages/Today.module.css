@@ -66,8 +66,9 @@
 
 .transcriptHead { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
 .markBar { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); }
-.line { display: flex; gap: 12px; align-items: flex-start; padding: 8px 0; border-top: 1px solid var(--border-soft); }
-.lineCited { composes: line; background: var(--cite); border-radius: 6px; padding: 8px; margin: 0 -8px; }
+.line { display: flex; gap: 12px; align-items: flex-start; padding: 4px 8px; margin: 0 -8px; border-top: 1px solid var(--border-soft); }
+.lineBand { composes: line; background: var(--band); }
+.lineCited { composes: line; background: var(--cite); border-radius: 6px; }
 .play {
   flex: none;
   width: 32px;
@@ -83,8 +84,8 @@
 }
 .play:disabled { opacity: 0.4; cursor: default; }
 .markBox { flex: none; width: 20px; height: 20px; margin: 6px; }
-.clock { flex: none; width: 70px; font-family: var(--mono); font-size: 12.5px; color: var(--muted); padding-top: 6px; }
-.who { flex: none; width: 92px; font-weight: 600; padding-top: 4px; overflow: hidden; text-overflow: ellipsis; }
+.clock { flex: none; width: 64px; font-family: var(--mono); font-size: 12px; color: var(--muted); padding-top: 6px; }
+.who { flex: none; width: 128px; font-weight: 600; padding-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .text { flex: 1; min-width: 0; padding-top: 4px; }
 .footer { display: flex; justify-content: flex-end; }
 .noteBtn {
@@ -106,8 +107,8 @@
 @media (max-width: 760px) {
   .timeline { max-width: none; }
   .counts { margin-left: 0; }
-  .who { width: 70px; }
-  .clock { width: 62px; }
+  .who { width: 96px; }
+  .clock { width: 58px; }
 }
 
 .meetingLinks { margin-left: auto; display: flex; gap: 8px; }
