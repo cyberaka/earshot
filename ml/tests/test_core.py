@@ -83,49 +83,28 @@ def test_echo_ignores_own_voice_with_headphones():
 
 
 class _Fake(asr.MlxWhisper):
-    """Scripted results per language, to test the mixed-language choice without a model."""
-    def __init__(self, results):
-        self.results, self.calls = results, []
+    """Scripted decodes, to test what English + Hindi asks for and keeps without a model."""
+    def __init__(self, segments):
+        self.segments, self.calls = segments, []
 
     def _transcribe(self, samples, language, initial_prompt, **decode):
-        self.calls.append(language)
-        return self.results[language]
-
-    def _check(self, samples, language):
-        return self.results[language]
+        self.calls.append((language, initial_prompt))
+        return self.segments
 
 
-def test_mixed_language_keeps_confident_english():
-    e = _Fake({"en": [seg(text="so if I speak in English", avg_logprob=-0.2)], "hi": [seg(text="x", avg_logprob=-0.2)]})
-    assert e.transcribe(np.zeros(SAMPLE_RATE), "en+hi")[0].text == "so if I speak in English"
-    assert e.calls == ["en"]  # confident: Hindi is never tried
+def test_english_hindi_is_hinglish_in_latin_letters():
+    # Owner, 2026-10-25: Hinglish in Latin letters, no Devanagari. One English decode with a romanized example.
+    e = _Fake([seg(text="Data engineering totally aapka tha"), seg(text="डेटा एंजिनरिंग"), seg(text="Haan bhai, theek hai."),
+               seg(text="So if I speak in English")])
+    out = [g.text for g in e.transcribe(np.zeros(SAMPLE_RATE), "en+hi", initial_prompt="Names and terms: Thanveer.")]
+    assert out == ["Data engineering totally aapka tha", "So if I speak in English"]  # Devanagari and the echoed example dropped
+    assert e.calls == [("en", asr.HINGLISH_PROMPT + " Names and terms: Thanveer.")]
 
 
-def test_mixed_language_switches_to_hindi():
-    e = _Fake({"en": [seg(text="How to eat the food.", avg_logprob=-0.96)], "hi": [seg(text="हाथी के खाने के", avg_logprob=-0.29)]})
-    assert e.transcribe(np.zeros(SAMPLE_RATE), "en+hi")[0].text == "हाथी के खाने के"
-    # Hindi noise words never win, however confident.
-    e = _Fake({"en": [seg(text="you", avg_logprob=-0.95)], "hi": [seg(text="झाल झाल", avg_logprob=-0.42)]})
-    assert e.transcribe(np.zeros(SAMPLE_RATE), "en+hi")[0].text == "you"
-
-
-def test_mixed_language_hinglish_and_garbage():
-    """Real lines from the 2026-10-20 calls."""
-    def pick(en, en_c, hi, hi_c):
-        return _Fake({"en": [seg(text=en, avg_logprob=en_c)], "hi": [seg(text=hi, avg_logprob=hi_c)]}).transcribe(
-            np.zeros(SAMPLE_RATE), "en+hi")[0].text
-    # Hinglish: English gives a translation it is only fairly sure of; Hindi gets the words right.
-    assert pick("So if English words go transcribe", -0.41, "सिफ इंगलिश वोट्स को ट्रांस्क्राइब", -0.28) == "सिफ इंगलिश वोट्स को ट्रांस्क्राइब"
-    # A Hindi decoding loop scores better than the real English, and still loses.
-    assert pick("Inside the drawer, do you see?", -0.66, "इसी कि इसी कि इसी कि इसी कि इसी कि", -0.20) == "Inside the drawer, do you see?"
-    assert pick("And although", -0.6, "एन एन एन एन एन", -0.19) == "And although"
-    # Muddy audio (a child on a phone): Hindi beats a poor English pass but isn't confident itself.
-    assert pick("The Times of India", -0.9, "अप्रेदे लिए मोलेश पीर", -0.6) == "The Times of India"
-    # Drifting into other scripts is not Hindi.
-    assert pick("If I speak English", -0.55, "Если Вы gram English", -0.3) == "If I speak English"
-    # Hindi mode writing the English it heard: keep the English pass (punctuation, casing).
-    assert pick("Okay, so if I speak in English, things are better.", -0.68, "okay so if I speak in English things are better", -0.5) \
-        == "Okay, so if I speak in English, things are better."
+def test_hindi_alone_still_writes_devanagari():
+    e = _Fake([seg(text="हाथी के खाने के")])
+    assert [g.text for g in e.transcribe(np.zeros(SAMPLE_RATE), "hi")] == ["हाथी के खाने के"]
+    assert e.calls == [("hi", None)]
 
 
 def test_live_stop_drops_queued_audio():
@@ -179,7 +158,8 @@ def test_framed_stream_keeps_file_time():
 def test_foreign_scripts_dropped_only_for_en_hi():
     assert asr.foreign(seg(text="やあみし"), "en+hi")
     assert asr.foreign(seg(text="Если"), "en")
-    assert not asr.foreign(seg(text="इनोवेशन is key"), "en+hi")
+    assert asr.foreign(seg(text="इनोवेशन is key"), "en+hi")  # Hinglish is written in Latin letters
+    assert not asr.foreign(seg(text="इनोवेशन"), "hi")
     assert not asr.foreign(seg(text="café résumé"), "en")
     assert not asr.foreign(seg(text="やあみし"), "auto")
 

@@ -7,9 +7,6 @@ from dataclasses import dataclass, field
 import mlx.core as mx
 import mlx_whisper
 import numpy as np
-from mlx_whisper import decoding
-from mlx_whisper.audio import N_FRAMES, N_SAMPLES, log_mel_spectrogram, pad_or_trim
-from mlx_whisper.transcribe import ModelHolder
 
 from .config import SAMPLE_RATE, WHISPER_MODEL
 
@@ -20,25 +17,12 @@ GPU_LOCK = threading.Lock()
 # (2026-10-24). 1 GB keeps reuse for the common sizes.
 mx.set_cache_limit(1 << 30)
 
-# Mixed languages ("en+hi"): each utterance is transcribed in the first language; unless Whisper is
-# sure of it, the next is tried too, and kept only if it is clean, really in that language's script,
-# and more confident. Measured 2026-10-20 on two real Hindi/English calls (115 utterances):
-# - Hinglish ("sirf English words ko transcribe") scored -0.41 in English (a translation) and -0.28
-#   in Hindi (right), so anything short of a sure English result is worth a Hindi pass.
-# - Hindi forced onto English speech often loops ("इसी कि इसी कि ...") or drifts into other scripts,
-#   and such loops score *better* (-0.2..-0.4) than the real English: the score alone can't decide.
-# - English transliterated into Devanagari ("इस बेब तो लिसन इन") scores well below the English.
-# - On muddy audio (a child on a phone) both passes are poor and Hindi "wins" with nonsense, so Hindi
-#   must also be confident in itself; every real Hindi line seen scored -0.16..-0.47.
-# The check is a text-only decode (~0.66 s: one encoder run, no word timing); only a Hindi win pays
-# for the full pass with word timings.
-TRY_NEXT_BELOW = -0.25
-NEXT_MARGIN = 0.05
-NEXT_AT_LEAST = -0.5
-# Tokens per second of speech allowed in the check: room for fast Hindi, none for a long loop.
-NEXT_TOKENS_PER_S = 15
-SCRIPTS = {"hi": ("\u0900", "\u097f")}  # Devanagari
-NOISE_WORDS = {"झाल"}
+# English + Hindi is written as Hinglish in Latin letters (owner, 2026-10-25: "I prefer Hinglish in
+# Latin letters. Avoid Devanagari"): one English decode, steered by an example of romanized Hinglish.
+# Without it, Hindi speech decoded as English comes out translated ("Data Engineering was totally
+# your own"); with it, as said ("Data engineering totally aapka tha"), English terms kept in English.
+# Measured on the 23 Oct recorder day, conversation 30.
+HINGLISH_PROMPT = "Haan bhai, theek hai. Mujhe lagta hai ki yeh kaam aaj karna hai, data ka issue dekh lo."
 
 
 @dataclass
@@ -73,42 +57,12 @@ class MlxWhisper(ASREngine):
     def transcribe(self, samples: np.ndarray, language: str | None = "en", initial_prompt: str | None = None) -> list[Segment]:
         if len(samples) < SAMPLE_RATE // 4:
             return []
-        if language and "+" in language:
-            first, *others = language.split("+")
-            best = self._transcribe(samples, first, initial_prompt)
-            for other in others:
-                if confidence(best) >= TRY_NEXT_BELOW and best:
-                    break
-                if self._better(self._check(samples, other), best, other):
-                    # No prompt: text in the first language would pull the decoder back to it.
-                    alt = self._transcribe(samples, other, None, temperature=0.0)
-                    if self._better(alt, best, other):
-                        best = alt
-            return [g for g in best if not foreign(g, language)]
+        if hinglish(language):
+            prompt = " ".join(p for p in (HINGLISH_PROMPT, initial_prompt) if p)
+            segs = self._transcribe(samples, "en", prompt)
+            return [g for g in segs if g.text.strip() and not foreign(g, "en") and not echoes_prompt(g, HINGLISH_PROMPT)]
         segs = self._transcribe(samples, language, initial_prompt)
         return [g for g in segs if not foreign(g, language)]
-
-    @staticmethod
-    def _better(alt: list[Segment], best: list[Segment], language: str) -> bool:
-        c = confidence(alt)
-        return (c > confidence(best) + NEXT_MARGIN and c >= NEXT_AT_LEAST and in_script(alt, language)
-                and not garbled(alt, language) and not only_noise(alt))
-
-    def _check(self, samples: np.ndarray, language: str) -> list[Segment]:
-        """Text and scores in another language from one quick decode: no word timing, no retries at
-        higher temperature, and a length cap (a decoding loop is rejected, not decoded at length)."""
-        if len(samples) > N_SAMPLES:
-            return self._transcribe(samples, language, None, temperature=0.0)
-        with GPU_LOCK:
-            model = ModelHolder.get_model(self.repo, mx.float16)
-            mel = pad_or_trim(log_mel_spectrogram(samples.astype(np.float32), n_mels=model.dims.n_mels), N_FRAMES, axis=-2)
-            r = decoding.decode(model, mel.astype(mx.float16), decoding.DecodingOptions(
-                language=language, without_timestamps=True, temperature=0.0,
-                sample_len=min(224, int(NEXT_TOKENS_PER_S * len(samples) / SAMPLE_RATE) + 20)))
-        text = r.text.strip()
-        if not text:
-            return []
-        return [Segment(0.0, round(len(samples) / SAMPLE_RATE, 3), text, [], r.avg_logprob, r.no_speech_prob, r.compression_ratio)]
 
     def _transcribe(self, samples: np.ndarray, language: str | None, initial_prompt: str | None, **decode) -> list[Segment]:
         with GPU_LOCK:
@@ -142,22 +96,6 @@ def confidence(segments: list[Segment]) -> float:
     return sum(s.avg_logprob * max(s.end - s.start, 0.01) for s in segments) / total if segments else -1.0
 
 
-def garbled(segments: list[Segment], language: str) -> bool:
-    """A decoding loop or a drift into other scripts (besides English and the language's own), not speech."""
-    if any(s.compression_ratio > 2.0 for s in segments):
-        return True
-    text = " ".join(s.text for s in segments)
-    lo, hi = SCRIPTS.get(language, ("", "\U0010ffff"))
-    if any(c.isalpha() and not c.isascii() and not lo <= c <= hi for c in text):
-        return True
-    words = text.split()
-    for n in (1, 2, 3):
-        for i in range(len(words) - 4 * n + 1):
-            if words[i:i + n] * 4 == words[i:i + 4 * n]:
-                return True
-    return False
-
-
 def vocabulary_prompt(terms: list[str] | None) -> str | None:
     """Whisper's initial prompt from the user's names and terms (R-3): it biases spelling towards
     them ("Abhinav", not "Aveena"). Kept short: the prompt shares Whisper's 224-token context."""
@@ -182,24 +120,18 @@ def echoes_prompt(seg: Segment, prompt: str | None) -> bool:
     return len(words) >= 2 and all(w in vocab for w in words) or "names and terms" in seg.text.lower()
 
 
+def hinglish(language: str | None) -> bool:
+    return bool(language) and set(language.split("+")) == {"en", "hi"}
+
+
 def foreign(seg: Segment, language: str | None) -> bool:
     """Text in a writing system nobody was speaking: with English and/or Hindi set, Whisper sometimes
     writes noise as Japanese or Cyrillic ("やあみし", ISB class 2026-10-24). Latin with accents and
     Devanagari are fine; with `auto` anything goes."""
     if not language or language == "auto" or not set(language.split("+")) <= {"en", "hi"}:
         return False
-    return any(c.isalpha() and not (c <= "\u024f" or "\u0900" <= c <= "\u097f") for c in seg.text)
-
-
-def in_script(segments: list[Segment], language: str) -> bool:
-    """Whisper in Hindi mode sometimes just writes the English it heard: then the English pass is better."""
-    lo, hi = SCRIPTS.get(language, ("", "\U0010ffff"))
-    return any(lo <= c <= hi for s in segments for c in s.text if c.isalpha())
-
-
-def only_noise(segments: list[Segment]) -> bool:
-    words = [w.strip(".,!?।") for s in segments for w in s.text.split()]
-    return all(w in NOISE_WORDS for w in words)
+    devanagari_ok = "hi" in language.split("+") and not hinglish(language)
+    return any(c.isalpha() and not (c <= "\u024f" or devanagari_ok and "\u0900" <= c <= "\u097f") for c in seg.text)
 
 
 def keep(seg: Segment, f: Filters, speech_fraction: float) -> bool:
