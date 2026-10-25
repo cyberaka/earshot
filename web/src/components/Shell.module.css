@@ -58,9 +58,29 @@
   flex-direction: column;
   gap: 4px;
 }
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  margin-left: -8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.toggle:hover { background: var(--border-soft); color: var(--ink); }
+.navCollapsed { composes: nav; flex: none; width: 72px; padding: 20px 12px; }
+.navCollapsed .navLink, .navCollapsed .active { justify-content: center; padding: 0; }
+.navCollapsed .label { display: none; }
+.navCollapsed .startMeeting { padding: 0; }
+.icon { flex: none; }
 .navLink {
   display: flex;
   align-items: center;
+  gap: 12px;
   min-height: 44px;
   padding: 0 12px;
   border-radius: 8px;
@@ -96,8 +116,11 @@
 }
 
 @media (max-width: 760px) {
-  .nav { max-width: none; flex-direction: row; flex-wrap: wrap; padding: 10px 16px 0; }
-  .startMeeting { margin-top: 0; padding: 0 14px; }
+  .toggle { display: none; }
+  .navCollapsed .label { display: inline; }
+  .navCollapsed .navLink, .navCollapsed .active { padding: 0 12px; }
+  .nav, .navCollapsed { width: auto; max-width: none; flex-direction: row; flex-wrap: wrap; padding: 10px 16px 0; }
+  .startMeeting, .navCollapsed .startMeeting { margin-top: 0; padding: 0 14px; }
   .main { padding: 16px; }
   .header { padding: 10px 16px; }
 }

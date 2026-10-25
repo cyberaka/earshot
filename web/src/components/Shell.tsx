@@ -37,10 +37,41 @@ function InsightsBadge({ insights }: { insights: Health['insights'] }) {
   return null
 }
 
+// Outline icons for the sidebar, shown alone when it is collapsed.
+const ICONS: Record<string, string> = {
+  today: 'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
+  meeting: 'M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM5 11a7 7 0 0 0 14 0M12 18v3',
+  search: 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-3.5-3.5',
+  import: 'M12 15V4M7 9l5-5 5 5M4 20h16',
+  people: 'M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM2 21v-1a6 6 0 0 1 12 0v1M16 3.5a4 4 0 0 1 0 7M22 21v-1a6 6 0 0 0-4-5.6',
+  settings: 'M4 7h10M18 7h2M4 17h4M12 17h8M14 5v4M8 15v4',
+}
+
+function Icon({ name }: { name: string }) {
+  return (
+    <svg className={s.icon} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d={ICONS[name]} />
+    </svg>
+  )
+}
+
+const COLLAPSED_KEY = 'earshot.sidebarCollapsed'
+
+function storedCollapsed() {
+  try { return localStorage.getItem(COLLAPSED_KEY) === '1' } catch { return false }
+}
+
 export default function Shell({ children }: { children: ReactNode }) {
   const health = useHealth()
   const navigate = useNavigate()
   const [q, setQ] = useState('')
+  const [collapsed, setCollapsed] = useState(storedCollapsed)
+  function toggle() {
+    setCollapsed(c => {
+      try { localStorage.setItem(COLLAPSED_KEY, c ? '0' : '1') } catch { /* private window: not remembered */ }
+      return !c
+    })
+  }
   const link = ({ isActive }: { isActive: boolean }) => (isActive ? s.active : s.navLink)
   const allUp = health && health.db === 'up' && health.ml === 'up' && health.capture === 'up'
 
@@ -52,6 +83,13 @@ export default function Shell({ children }: { children: ReactNode }) {
   return (
     <>
       <header className={s.header}>
+        <button type="button" className={s.toggle} onClick={toggle} aria-expanded={!collapsed} aria-controls="main-nav"
+          title={collapsed ? 'Show the sidebar' : 'Collapse the sidebar'}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M4 5h16v14H4zM9 5v14" />
+          </svg>
+          <span className="sr-only">{collapsed ? 'Show the sidebar' : 'Collapse the sidebar'}</span>
+        </button>
         <NavLink to="/" className={s.brand}><Logo />Earshot</NavLink>
         <form className={s.search} onSubmit={submit} role="search">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>
@@ -65,16 +103,16 @@ export default function Shell({ children }: { children: ReactNode }) {
         </div>
       </header>
       <div className={s.body}>
-        <nav aria-label="Main" className={s.nav}>
-          <NavLink to="/" end className={link}>Today</NavLink>
-          <NavLink to="/meeting" className={link}>Live meeting</NavLink>
-          <NavLink to="/search" className={link}>Search</NavLink>
-          <NavLink to="/import" className={link}>Import</NavLink>
-          <NavLink to="/people" className={link}>People</NavLink>
-          <NavLink to="/settings" className={link}>Settings</NavLink>
+        <nav id="main-nav" aria-label="Main" className={collapsed ? s.navCollapsed : s.nav}>
+          {([['/', 'today', 'Today'], ['/meeting', 'meeting', 'Live meeting'], ['/search', 'search', 'Search'], ['/import', 'import', 'Import'],
+            ['/people', 'people', 'People'], ['/settings', 'settings', 'Settings']] as const).map(([to, icon, label]) => (
+            <NavLink key={to} to={to} end={to === '/'} className={link} title={collapsed ? label : undefined} aria-label={collapsed ? label : undefined}>
+              <Icon name={icon} /><span className={s.label}>{label}</span>
+            </NavLink>
+          ))}
           {health?.activeMeetingId
-            ? <NavLink to={`/meeting/${health.activeMeetingId}`} className={s.startMeeting}><span className={s.whiteDot} />Meeting live</NavLink>
-            : <NavLink to="/meeting" className={s.startMeeting}><span className={s.whiteDot} />Start meeting</NavLink>}
+            ? <NavLink to={`/meeting/${health.activeMeetingId}`} className={s.startMeeting} title={collapsed ? 'Meeting live' : undefined}><span className={s.whiteDot} /><span className={s.label}>Meeting live</span></NavLink>
+            : <NavLink to="/meeting" className={s.startMeeting} title={collapsed ? 'Start meeting' : undefined}><span className={s.whiteDot} /><span className={s.label}>Start meeting</span></NavLink>}
         </nav>
         <main className={s.main}>{children}</main>
       </div>
