@@ -115,3 +115,9 @@
 .whoBtn { composes: who; border: 0; background: none; text-align: left; font: inherit; font-weight: 600; cursor: pointer; }
 .whoBtn:hover { text-decoration: underline; }
 .nameQuote { font-size: 14px; color: var(--ink-2); font-style: italic; overflow-wrap: anywhere; }
+/* Correcting a paragraph (R-4): its tools sit with "+ note", quiet until the row is hovered. */
+.lineTools { flex: none; align-self: center; display: flex; gap: 2px; }
+.noteBtn:disabled { cursor: default; opacity: 0.3; }
+.edited { color: var(--muted); font-size: 12px; white-space: nowrap; cursor: help; }
+.fixPanel { composes: namePanel; }
+.proposal { display: flex; flex-direction: column; gap: 8px; border-left: 3px solid var(--accent); padding: 4px 0 4px 12px; }

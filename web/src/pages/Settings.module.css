@@ -5,3 +5,5 @@
 .features { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
 .feature { display: flex; flex-direction: column; gap: 6px; }
 .privacy { font-size: 13px; color: var(--warn); }
+.rowTools { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.addRow { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }

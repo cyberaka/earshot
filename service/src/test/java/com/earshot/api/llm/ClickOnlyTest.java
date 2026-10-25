@@ -34,7 +34,10 @@ class ClickOnlyTest {
 			Pattern.compile("\\.embedQuery\\("), List.of("search/SearchService.java"),
 			// A full re-transcription (heavy CPU and GPU) is queued only by the Re-transcribe button.
 			Pattern.compile("meetings\\.retranscribe\\("), List.of("meeting/MeetingController.java"),
-			Pattern.compile("enqueue\\([^;]*\"post_meeting_full"), List.of("meeting/MeetingService.java"));
+			Pattern.compile("enqueue\\([^;]*\"post_meeting_full"), List.of("meeting/MeetingService.java"),
+			// Hearing one line again (R-4): a second model or the cloud, only from the line's button.
+			Pattern.compile("lines\\.retranscribe\\("), List.of("conversation/LineController.java"),
+			Pattern.compile("cloud\\.transcribe\\(|\\.transcribeLine\\("), List.of("conversation/LineEdits.java", "ml/MlClient.java"));
 
 	private static List<String> files() throws IOException {
 		try (var s = Files.walk(SRC)) {

@@ -24,6 +24,9 @@ SECRET = os.environ.get("EARSHOT_ML_SECRET", "")
 ML_PORT = int(os.environ.get("EARSHOT_ML_PORT", "8091"))
 CAPTURE_PORT = int(os.environ.get("EARSHOT_CAPTURE_PORT", "8092"))
 WHISPER_MODEL = os.environ.get("EARSHOT_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo")
+# A second opinion on one badly heard line (owner request R-4): the full large-v3, slower than turbo.
+# Loaded only for that click, then the everyday model is loaded back.
+SECOND_OPINION_MODEL = os.environ.get("EARSHOT_SECOND_OPINION_MODEL", "mlx-community/whisper-large-v3-mlx")
 DIARIZATION_MODEL = os.environ.get("EARSHOT_DIARIZATION_MODEL", "pyannote/speaker-diarization-community-1")
 EMBEDDING_MODEL = os.environ.get("EARSHOT_SPEAKER_EMBEDDING_MODEL", "pyannote/wespeaker-voxceleb-resnet34-LM")
 SAMPLE_RATE = 16000

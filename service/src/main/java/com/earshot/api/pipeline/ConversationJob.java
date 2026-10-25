@@ -167,7 +167,7 @@ public class ConversationJob implements JobWorker.Handler {
 			db.sql("""
 					INSERT INTO segment (conversation_id, speaker_cluster_id, channel, start_s, end_s, text, words_json, confidence)
 					VALUES (:c, :sc, 'mixed', :s, :e, :t, CAST(:w AS jsonb), :p)""").param("c", c.id()).param("sc", clusterOf.get(seg.speaker()))
-					.param("s", seg.start()).param("e", seg.end()).param("t", seg.text()).param("w", json.writeValueAsString(seg.words()))
+					.param("s", seg.start()).param("e", seg.end()).param("t", vocabulary.correct(seg.text())).param("w", json.writeValueAsString(seg.words()))
 					.param("p", seg.confidence()).update();
 		}
 		log.info("event=transcribed conversation={} asr_segments={} dropped={}", c.id(), asr.size(), res.path("dropped").asInt());

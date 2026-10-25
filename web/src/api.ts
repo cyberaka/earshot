@@ -24,6 +24,32 @@ export interface SpeakerView {
 export interface SegmentView {
   id: number; startS: number; endS: number; clock: string; speaker: string; key: string
   clusterId: number | null; channel: string; text: string; live: boolean; elapsedS: number
+  /** Set when the user corrected the line (R-4): what Earshot first wrote, and who changed it. */
+  originalText: string | null; editedBy: string | null
+}
+
+export interface Correction { id: number; wrong: string; fixed: string }
+export interface LineProposal { text: string; engine: string; model: string; audioS: number }
+export interface RetranscribeOptions {
+  local: { model: string; note: string }
+  cloud: { available: boolean; model: string; usdPerMinute: number }
+}
+
+/**
+ * The word or phrase an edit swapped, when it is one small swap ("Taaf engineer" → "staff engineer"):
+ * worth offering as a correction for every transcript. Null for a rewrite.
+ */
+export function swapIn(before: string, after: string): { wrong: string; fixed: string } | null {
+  const a = before.trim().split(/\s+/), b = after.trim().split(/\s+/)
+  const bare = (w: string) => w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')
+  let i = 0
+  while (i < a.length && i < b.length && a[i] === b[i]) i++
+  let j = 0
+  while (j < a.length - i && j < b.length - i && a[a.length - 1 - j] === b[b.length - 1 - j]) j++
+  const wrong = a.slice(i, a.length - j).map(bare).join(' ').trim(), fixed = b.slice(i, b.length - j).map(bare).join(' ').trim()
+  if (!wrong || !fixed || wrong.toLowerCase() === fixed.toLowerCase()) return null
+  if (wrong.split(' ').length > 4 || fixed.split(' ').length > 4) return null
+  return { wrong, fixed }
 }
 
 export interface NoteView { id: number; text: string; anchorS: number | null; clock: string | null; createdAt: string }
@@ -258,6 +284,16 @@ export const api = {
   retranscribeMeeting: (id: number) => send<{ queued: number; audioS: number }>('POST', `/api/meetings/${id}/retranscribe`),
   resumeMeeting: (id: number, body: Record<string, unknown>) => send<{ meetingId: number }>('POST', `/api/meetings/${id}/resume`, body),
   switchMeetingLanguage: (id: number, language: string) => send<{ language: string | null }>('POST', `/api/meetings/${id}/language`, { language }),
+  assignLines: (ids: number[], body: { personId?: number | null; name?: string; me?: boolean; addToLibrary: boolean }) =>
+    send<{ lines: number }>('PATCH', '/api/segments/speaker', { ids, personId: null, name: null, me: false, ...body }),
+  editLines: (ids: number[], text: string, by = 'user') => send<{ id: number }>('PATCH', '/api/lines/text', { ids, text, by }),
+  revertLine: (id: number) => send('POST', `/api/lines/${id}/revert`),
+  retranscribeOptions: () => get<RetranscribeOptions>('/api/lines/retranscribe'),
+  retranscribeLines: (ids: number[], engine: 'local' | 'cloud') => send<LineProposal>('POST', '/api/lines/retranscribe', { ids, engine }),
+  corrections: () => get<Correction[]>('/api/corrections'),
+  addCorrection: (wrong: string, fixed: string) => send<Correction>('POST', '/api/corrections', { wrong, fixed }),
+  deleteCorrection: (id: number) => send('DELETE', `/api/corrections/${id}`),
+  applyCorrection: (id: number) => send<{ lines: number }>('POST', `/api/corrections/${id}/apply`),
   assignLine: (segmentId: number, body: { personId?: number | null; name?: string; me?: boolean; addToLibrary: boolean }) =>
     send<{ clusterId: number }>('PATCH', `/api/segments/${segmentId}/speaker`, { personId: null, name: null, me: false, ...body }),
   switchMeetingDevice: (id: number, device: string, micChannel?: number, systemChannel?: number) =>

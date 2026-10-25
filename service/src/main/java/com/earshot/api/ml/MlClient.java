@@ -43,9 +43,13 @@ public class MlClient {
 	}
 
 	private JsonNode post(RestClient client, String path, Object body) {
+		return post(client, path, body, false);
+	}
+
+	private JsonNode post(RestClient client, String path, Object body, boolean clicked) {
 		try {
 			var req = client.post().uri(path).body(body);
-			if (com.earshot.api.job.JobWorker.clickedDuringLive()) {
+			if (clicked || com.earshot.api.job.JobWorker.clickedDuringLive()) {
 				// The user started this during the meeting on purpose: the speech engine does not hold it back.
 				req = req.header("X-Earshot-Clicked-During-Live", "1");
 			}
@@ -77,6 +81,15 @@ public class MlClient {
 		var body = new java.util.HashMap<String, Object>(filters);
 		body.putAll(Map.of("path", path, "start_s", start, "end_s", end, "regions", regions, "language", language, "vocabulary", vocabulary));
 		return post(ml, "/ml/transcribe", body);
+	}
+
+	/**
+	 * One line the user asked to hear again (R-4): sent as a click, so it runs even during a live
+	 * meeting (D-12). {@code secondOpinion}: through the slower large-v3 instead of the everyday model.
+	 */
+	public JsonNode transcribeLine(String path, double start, double end, String language, List<String> vocabulary, boolean secondOpinion) {
+		return post(ml, "/ml/transcribe", Map.of("path", path, "start_s", start, "end_s", end, "language", language, "vocabulary", vocabulary,
+				"second_opinion", secondOpinion), true);
 	}
 
 	public void liveVocabulary(String sessionId, List<String> vocabulary) {

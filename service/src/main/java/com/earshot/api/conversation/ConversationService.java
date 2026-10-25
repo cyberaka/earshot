@@ -60,7 +60,7 @@ public class ConversationService {
 	 * (owner request: to find where to resume a video that was playing).
 	 */
 	public record SegmentView(long id, double startS, double endS, String clock, String speaker, String key, Long clusterId,
-			String channel, String text, boolean live, double elapsedS) {
+			String channel, String text, boolean live, double elapsedS, String originalText, String editedBy) {
 	}
 
 	/** The user's own note; {@code clock} is set when it is pinned to a moment. */
@@ -226,7 +226,7 @@ public class ConversationService {
 				SELECT COALESCE(sum(end_offset_s - start_offset_s), 0) FROM conversation WHERE meeting_id = :m AND part < :p""")
 				.param("m", c.meetingId()).param("p", c.part()).query(Double.class).single();
 		var segments = db.sql("""
-				SELECT id, start_s, end_s, speaker_cluster_id, channel, text, live FROM segment
+				SELECT id, start_s, end_s, speaker_cluster_id, channel, text, live, original_text, edited_by FROM segment
 				WHERE conversation_id = :c
 				  -- While being re-transcribed, the current lines (marked live) show until the new ones replace them.
 				  AND (live OR NOT EXISTS (SELECT 1 FROM conversation x WHERE x.id = :c AND x.stage = 'retranscribing'))
@@ -237,7 +237,7 @@ public class ConversationService {
 			String name = sp != null ? sp.name() : SpeakerNames.channelName(channel, c.audioMode());
 			String key = sp != null ? key(sp) : ("Others".equals(name) ? "others" : "Room".equals(name) ? "room" : "me");
 			return new SegmentView(rs.getLong(1), rs.getDouble(2), rs.getDouble(3), clock(c, rs.getDouble(2), HMS), name, key, cid,
-					channel, rs.getString(6), rs.getBoolean(7), base + rs.getDouble(2));
+					channel, rs.getString(6), rs.getBoolean(7), base + rs.getDouble(2), rs.getString(8), rs.getString(9));
 		}).list();
 		var attachments = db.sql("""
 				SELECT id, anchor_s, caption, path, original_name, placed_by, taken_at FROM attachment WHERE conversation_id = :c ORDER BY anchor_s, id""")

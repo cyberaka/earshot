@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, PROVIDER_LABEL, type Health, type InsightFeature, type Provider } from '../api'
+import { api, PROVIDER_LABEL, type Correction, type Health, type InsightFeature, type Provider } from '../api'
 import ui from '../components/ui.module.css'
 import s from './Settings.module.css'
 
@@ -117,6 +117,8 @@ export default function Settings() {
         </details>
       </section>
 
+      <Corrections />
+
       <div className={s.grid}>
         {groups.map(g => (
           <section key={g.title} className={ui.card}>
@@ -127,5 +129,59 @@ export default function Settings() {
       </div>
       <p className={ui.muted}>Speaker thresholds apply to new conversations; use “Re-match past conversations” on the People page to apply them to old ones.</p>
     </>
+  )
+}
+
+/**
+ * Words Earshot keeps getting wrong (owner request R-4): fixed in every new transcript, and given to
+ * Whisper as names and terms. Usually added from a corrected line; also typed here.
+ */
+function Corrections() {
+  const [list, setList] = useState<Correction[] | null>(null)
+  const [wrong, setWrong] = useState('')
+  const [fixed, setFixed] = useState('')
+  const [note, setNote] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const load = () => api.corrections().then(setList).catch(e => setError(String(e)))
+  useEffect(() => { load() }, [])
+
+  async function add() {
+    try { await api.addCorrection(wrong.trim(), fixed.trim()); setWrong(''); setFixed(''); setError(null); load() } catch (e) { setError(String(e)) }
+  }
+  return (
+    <section className={ui.card}>
+      <h2 className={s.h2}>Corrections</h2>
+      <p className={ui.muted} style={{ margin: 0 }}>
+        Words Earshot keeps getting wrong. Each is fixed in every new transcript and given to Whisper as a name or term.
+        Correct a line on a day's transcript to add one, or type it here.
+      </p>
+      {list && list.length > 0 && (
+        <div className={ui.tableWrap}>
+          <table className={ui.table}>
+            <thead><tr><th>Heard as</th><th>Should be</th><th /></tr></thead>
+            <tbody>
+              {list.map(c => (
+                <tr key={c.id}>
+                  <td>{c.wrong}</td>
+                  <td><b>{c.fixed}</b></td>
+                  <td className={s.rowTools}>
+                    <button className={ui.btnSmall} onClick={() => api.applyCorrection(c.id).then(r => setNote(`Fixed “${c.wrong}” in ${r.lines} line${r.lines === 1 ? '' : 's'}.`)).catch(e => setError(String(e)))}>Fix existing transcripts</button>
+                    <button className={ui.btnSmall} onClick={() => api.deleteCorrection(c.id).then(load)}>Remove</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {list && list.length === 0 && <span className={ui.muted}>None yet.</span>}
+      <form className={s.addRow} onSubmit={e => { e.preventDefault(); if (wrong.trim() && fixed.trim()) add() }}>
+        <label className={ui.field}>Heard as<input className={ui.input} value={wrong} onChange={e => setWrong(e.target.value)} placeholder="Taaf engineer" /></label>
+        <label className={ui.field}>Should be<input className={ui.input} value={fixed} onChange={e => setFixed(e.target.value)} placeholder="staff engineer" /></label>
+        <button className={ui.btnSmall} disabled={!wrong.trim() || !fixed.trim()}>Add</button>
+      </form>
+      {note && <span className={ui.muted}>{note}</span>}
+      {error && <div className={ui.error}>{error}</div>}
+    </section>
   )
 }

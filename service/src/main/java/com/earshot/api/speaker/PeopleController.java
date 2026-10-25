@@ -71,6 +71,35 @@ public class PeopleController {
 		return Map.of("ok", true, "clusterId", moved[1]);
 	}
 
+	public record AssignLines(List<Long> ids, Long personId, String name, boolean me, boolean addToLibrary) {
+	}
+
+	/** A run of lines said by one person (R-4): one request, the voices refreshed once. */
+	@PatchMapping("/segments/speaker")
+	public Map<String, Object> assignLines(@RequestBody AssignLines req) {
+		if (req.personId() == null && !req.me() && (req.name() == null || req.name().isBlank())) {
+			throw new IllegalArgumentException("Give a person or a name.");
+		}
+		var moved = people.assignLines(req.ids(), req.personId(), req.name(), req.me(), req.addToLibrary());
+		var clusters = new java.util.LinkedHashSet<Long>();
+		for (int i = 0; i < moved.size(); i++) {
+			meetings.onLineChanged(req.ids().get(i), moved.get(i)[1]);
+			if (moved.get(i)[0] > 0) {
+				clusters.add(moved.get(i)[0]);
+			}
+			clusters.add(moved.get(i)[1]);
+		}
+		VOICES.submit(() -> {
+			try {
+				clusters.forEach(people::refreshVoice);
+				people.rematch();
+			} catch (Exception e) {
+				org.slf4j.LoggerFactory.getLogger(PeopleController.class).warn("event=voice_refresh_failed segments={} reason={}", req.ids().size(), e.getMessage());
+			}
+		});
+		return Map.of("ok", true, "lines", moved.size());
+	}
+
 	public record Update(String name, List<String> aliases) {
 	}
 

@@ -8,7 +8,7 @@ import mlx.core as mx
 import mlx_whisper
 import numpy as np
 
-from .config import SAMPLE_RATE, WHISPER_MODEL
+from .config import SAMPLE_RATE, SECOND_OPINION_MODEL, WHISPER_MODEL
 
 # MLX shares one GPU; live and batch transcription take turns (PRD §8).
 GPU_LOCK = threading.Lock()
@@ -150,3 +150,15 @@ def engine() -> ASREngine:
     if _engine is None:
         _engine = MlxWhisper()
     return _engine
+
+
+def second_opinion(samples: np.ndarray, language: str | None, initial_prompt: str | None) -> list[Segment]:
+    """One clicked line through the full large-v3 (R-4): mlx-whisper holds one model at a time, so the
+    everyday model is loaded back straight after, before live or batch work needs it."""
+    from mlx_whisper.transcribe import ModelHolder
+    try:
+        return MlxWhisper(SECOND_OPINION_MODEL).transcribe(samples, language, initial_prompt)
+    finally:
+        with GPU_LOCK:
+            ModelHolder.get_model(WHISPER_MODEL, mx.float16)
+        mx.clear_cache()

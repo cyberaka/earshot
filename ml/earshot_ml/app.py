@@ -48,6 +48,7 @@ class Diarize(Span):
 
 class Transcribe(Span):
     language: str | None = "en"
+    second_opinion: bool = False  # one clicked line through the slower large-v3 (R-4)
     vocabulary: list[str] = []  # names and terms for Whisper's prompt (R-3)
     no_speech_prob: float = 0.6
     avg_logprob: float = -1.0
@@ -171,7 +172,9 @@ def transcribe(req: Transcribe, x_earshot_clicked_during_live: str | None = Head
         yield_to_live(x_earshot_clicked_during_live)  # checked per ~30 s chunk, so a meeting that starts gets the GPU within seconds
         samples = audio.read_span(req.path, cs, ce)
         prompt = " ".join(p for p in (vocab, previous) if p) or None
-        for seg in asr.engine().transcribe(samples, req.language, initial_prompt=prompt):
+        heard = (asr.second_opinion(samples, req.language, prompt) if req.second_opinion
+                 else asr.engine().transcribe(samples, req.language, initial_prompt=prompt))
+        for seg in heard:
             start, stop = seg.start + cs, seg.end + cs
             frac = vad.speech_fraction(req.regions, start, stop) if req.regions else 1.0
             if not asr.keep(seg, filters, frac) or asr.echoes_prompt(seg, vocab):

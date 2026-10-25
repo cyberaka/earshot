@@ -289,7 +289,7 @@ public class PostMeetingJob implements JobWorker.Handler {
 							INSERT INTO segment (conversation_id, speaker_cluster_id, channel, live, start_s, end_s, text, words_json, confidence)
 							VALUES (:c, :sc, :ch, false, :s, :e, :t, CAST(:w AS jsonb), :p)""").param("c", convId).param("sc", speakerOf.get(i))
 							.param("ch", ch).param("s", s.get("start_s").asDouble()).param("e", s.get("end_s").asDouble())
-							.param("t", s.get("text").asString()).param("w", s.get("words").toString())
+							.param("t", vocabulary.correct(s.get("text").asString())).param("w", s.get("words").toString())
 							.param("p", Math.exp(s.path("avg_logprob").asDouble())).update();
 				}
 				log.info("event=caught_up meeting={} channel={} lines={} from_s={}", meetingId, ch, segs.size(), Math.round(from));
@@ -418,7 +418,7 @@ public class PostMeetingJob implements JobWorker.Handler {
 			db.sql("""
 					INSERT INTO segment (conversation_id, speaker_cluster_id, channel, start_s, end_s, text, words_json, confidence)
 					VALUES (:c, :sc, :ch, :s, :e, :t, CAST(:w AS jsonb), :p)""").param("c", convId).param("sc", clusterOf.get(seg.speaker()))
-					.param("ch", channel).param("s", seg.start()).param("e", seg.end()).param("t", seg.text())
+					.param("ch", channel).param("s", seg.start()).param("e", seg.end()).param("t", vocabulary.correct(seg.text()))
 					.param("w", json.writeValueAsString(seg.words())).param("p", seg.confidence()).update();
 		}
 		log.info("event=meeting_channel_done conversation={} channel={} clusters={}", convId, channel, clusterOf.size());

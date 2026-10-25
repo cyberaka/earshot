@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { api, groupTurns, nearest, turnBands, fmtDuration, fmtElapsed, speakerColor, todayLocal, type ConversationDetail, type DayView, type Provider, type NoteView, type Person, type SpeakerView } from '../api'
+import { api, groupTurns, nearest, swapIn, turnBands, fmtDuration, fmtElapsed, speakerColor, todayLocal, type ConversationDetail, type LineProposal, type RetranscribeOptions, type DayView, type Provider, type NoteView, type Person, type SpeakerView } from '../api'
 import AskBox from '../components/AskBox'
 import SummarizeButton from '../components/Summarize'
 import { useHealth } from '../components/Shell'
@@ -122,7 +122,12 @@ function Conversation({ id, onChanged, seek, onSeekDone, summaryWith, liveNow }:
   const [people, setPeople] = useState<Person[]>([])
   const [naming, setNaming] = useState<SpeakerView | null>(null)
   const [namingLine, setNamingLine] = useState<{ id: number; ids: number[]; text: string } | null>(null)
+  // Lines picked with the checkboxes ("Select lines"): to save as the user's voice, or to give to one speaker.
   const [markMe, setMarkMe] = useState<Set<number> | null>(null)
+  const [lastPick, setLastPick] = useState<number | null>(null)
+  // A paragraph being corrected (R-4), by the id of its first line.
+  const [fixing, setFixing] = useState<{ id: number; mode: 'edit' | 'redo' } | null>(null)
+  const [offer, setOffer] = useState<{ wrong: string; fixed: string; id?: number; applied?: number } | null>(null)
   const [highlight, setHighlight] = useState<number | null>(null)
   const [pinTo, setPinTo] = useState<number | null>(null)
   const [timeMode, setTimeMode] = useTimeMode()
@@ -247,9 +252,32 @@ function Conversation({ id, onChanged, seek, onSeekDone, summaryWith, liveNow }:
             <h3 className={ui.sectionLabel}>Transcript</h3>
             <TimeToggle mode={timeMode} onChange={setTimeMode} />
             {(markMe
-              ? <span className={s.markBar}>{markMe.size} selected <button className={ui.btnSmall} onClick={saveMe} disabled={markMe.size === 0}>Save as my voice</button><button className={ui.btnSmall} onClick={() => setMarkMe(null)}>Cancel</button></span>
-              : <button className={ui.btnSmall} onClick={() => setMarkMe(new Set())}>Mark lines that are me</button>)}
+              ? <span className={s.markBar}>{markMe.size} selected
+                <button className={ui.btnSmall} disabled={markMe.size === 0} onClick={() => {
+                  const ids = d.segments.filter(x => markMe.has(x.id)).map(x => x.id)
+                  const first = d.segments.find(x => x.id === ids[0])
+                  const sp = d.speakers.find(x => x.clusterId === first?.clusterId) ?? d.speakers[0]
+                  if (first && sp) { setNaming(sp); setNamingLine({ id: first.id, ids, text: `${ids.length} line${ids.length === 1 ? '' : 's'} selected` }) }
+                }}>Who said these?</button>
+                <button className={ui.btnSmall} onClick={saveMe} disabled={markMe.size === 0}>Save as my voice</button>
+                <button className={ui.btnSmall} onClick={() => { setMarkMe(null); setLastPick(null) }}>Cancel</button></span>
+              : <button className={ui.btnSmall} title="Tick lines, shift-click for a run: give them to one speaker, or save them as your voice"
+                onClick={() => setMarkMe(new Set())}>Select lines</button>)}
           </div>
+          {offer && (
+            <div className={ui.notice}>
+              {offer.id === undefined
+                ? <>Always change “{offer.wrong}” to “{offer.fixed}” in new transcripts?{' '}
+                  <button className={ui.btnSmall} onClick={() => api.addCorrection(offer.wrong, offer.fixed).then(c => setOffer({ ...offer, id: c.id }))}>Always change it</button>{' '}
+                  <button className={ui.btnSmall} onClick={() => setOffer(null)}>Just here</button></>
+                : offer.applied === undefined
+                  ? <>Saved: new transcripts will say “{offer.fixed}”.{' '}
+                    <button className={ui.btnSmall} onClick={() => api.applyCorrection(offer.id!).then(r => { setOffer({ ...offer, applied: r.lines }); load(); onChanged() })}>Fix existing transcripts too</button>{' '}
+                    <button className={ui.btnSmall} onClick={() => setOffer(null)}>Done</button></>
+                  : <>Fixed “{offer.wrong}” in {offer.applied} more line{offer.applied === 1 ? '' : 's'}. Manage corrections in Settings.{' '}
+                    <button className={ui.btnSmall} onClick={() => setOffer(null)}>Done</button></>}
+            </div>
+          )}
           <audio ref={audio} hidden />
           <div>
             {(() => {
@@ -273,8 +301,14 @@ function Conversation({ id, onChanged, seek, onSeekDone, summaryWith, liveNow }:
                 <div ref={el => { if (el) ids.forEach(id => rows.current.set(id, el)) }}
                   className={highlight !== null && ids.includes(highlight) ? s.lineCited : bands[i] ? s.lineBand : s.line}>
                   {markMe
-                    ? <input type="checkbox" aria-label={`Mark line at ${seg.clock} as me`} className={s.markBox} checked={marked}
-                      onChange={e => { const n = new Set(markMe); ids.forEach(id => e.target.checked ? n.add(id) : n.delete(id)); setMarkMe(n) }} />
+                    ? <input type="checkbox" aria-label={`Select the line at ${seg.clock}`} className={s.markBox} checked={marked}
+                      onClick={e => {
+                        // Shift-click: everything from the last line picked to this one.
+                        const on = !marked, from = e.shiftKey && lastPick !== null ? Math.min(lastPick, i) : i, to = e.shiftKey && lastPick !== null ? Math.max(lastPick, i) : i
+                        const n = new Set(markMe)
+                        groups.slice(from, to + 1).flat().forEach(x => on ? n.add(x.id) : n.delete(x.id))
+                        setMarkMe(n); setLastPick(i)
+                      }} readOnly />
                     : <button className={s.play} aria-label={`Play from ${seg.clock}`} disabled={!d.hasAudio} onClick={() => play(seg.startS, g[g.length - 1].endS + 0.3)}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4l13 8-13 8z" /></svg>
                     </button>}
@@ -285,14 +319,30 @@ function Conversation({ id, onChanged, seek, onSeekDone, summaryWith, liveNow }:
                     ? <button className={s.whoBtn} style={{ color: col.fg }} title="Who said this?"
                       onClick={() => { setNaming(speakerById.get(seg.clusterId!)!); setNamingLine({ id: seg.id, ids, text }) }}>{seg.speaker}</button>
                     : <span className={s.who} style={{ color: col.fg }}>{seg.speaker}</span>}
-                  <span className={s.text}>{text}</span>
-                  {!markMe && <button className={s.noteBtn} aria-label={`Add a note at ${seg.clock}`} title="Add a note here"
-                    onClick={() => setPinTo(pinTo === seg.id ? null : seg.id)}>+ note</button>}
+                  <span className={s.text}>{text}{g.some(x => x.originalText !== null) &&
+                    <span className={s.edited} title={`Earshot first wrote: ${g.map(x => x.originalText ?? x.text).join(' ')}`}> · edited</span>}</span>
+                  {!markMe && <span className={s.lineTools}>
+                    <button className={s.noteBtn} aria-label={`Correct the text at ${seg.clock}`} title="Correct the text"
+                      onClick={() => setFixing(fixing?.id === seg.id && fixing.mode === 'edit' ? null : { id: seg.id, mode: 'edit' })}>edit</button>
+                    <button className={s.noteBtn} aria-label={`Transcribe again at ${seg.clock}`} title="Hear it again with another model"
+                      disabled={!d.hasAudio} onClick={() => setFixing(fixing?.id === seg.id && fixing.mode === 'redo' ? null : { id: seg.id, mode: 'redo' })}>redo</button>
+                    <button className={s.noteBtn} aria-label={`Add a note at ${seg.clock}`} title="Add a note here"
+                      onClick={() => setPinTo(pinTo === seg.id ? null : seg.id)}>+ note</button>
+                  </span>}
                 </div>
+                {fixing?.id === seg.id && (
+                  <div className={s.pinned}>
+                    <FixLine key={`${seg.id}-${fixing.mode}`} ids={ids} text={text} mode={fixing.mode} audioS={g[g.length - 1].endS - seg.startS}
+                      original={g.length === 1 ? seg.originalText : null}
+                      onClose={() => setFixing(null)}
+                      onSaved={(before, after) => { setFixing(null); setOffer(swapIn(before, after)); load(); onChanged() }}
+                      onReverted={() => { setFixing(null); load(); onChanged() }} />
+                  </div>
+                )}
                 {naming && namingLine?.id === seg.id && (
                   <div className={s.pinned}>
                     <NameSpeaker key={seg.id} speaker={naming} line={namingLine} people={people} onClose={() => { setNaming(null); setNamingLine(null) }}
-                      onSaved={() => { setNaming(null); setNamingLine(null); load(); onChanged() }} />
+                      onSaved={() => { setNaming(null); setNamingLine(null); setMarkMe(null); setLastPick(null); load(); onChanged() }} />
                   </div>
                 )}
                 {ids.flatMap(id => pinned.get(id) ?? []).map(n => <div key={n.id} className={s.pinned}><NoteItem note={n} onChanged={load} /></div>)}
@@ -327,6 +377,81 @@ export function ConfirmButton({ label, confirm, onConfirm }: { label: string; co
 }
 
 /**
+ * Corrects a paragraph (owner request R-4): the user's own text, or another model's proposal kept by
+ * the user. Nothing is stored until Save or "Use this"; the paragraph becomes one line.
+ */
+function FixLine({ ids, text, mode, audioS, original, onClose, onSaved, onReverted }: {
+  ids: number[]; text: string; mode: 'edit' | 'redo'; audioS: number; original: string | null
+  onClose: () => void; onSaved: (before: string, after: string) => void; onReverted: () => void
+}) {
+  const [draft, setDraft] = useState(text)
+  const [editing, setEditing] = useState(mode === 'edit')
+  const [by, setBy] = useState('user')
+  const [options, setOptions] = useState<RetranscribeOptions | null>(null)
+  const [proposal, setProposal] = useState<LineProposal | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => { if (mode === 'redo') api.retranscribeOptions().then(setOptions).catch(e => setError(String(e))) }, [mode])
+
+  async function save(t: string, who: string) {
+    setBusy('save'); setError(null)
+    try { await api.editLines(ids, t, who); onSaved(text, t) } catch (e) { setError(String(e)); setBusy(null) }
+  }
+  async function redo(engine: 'local' | 'cloud') {
+    setBusy(engine); setError(null); setProposal(null)
+    try { setProposal(await api.retranscribeLines(ids, engine)) } catch (e) { setError(String(e)) }
+    setBusy(null)
+  }
+  const cost = options ? Math.max(0.001, (audioS / 60) * options.cloud.usdPerMinute) : 0
+
+  return (
+    <div className={s.fixPanel} role="group" aria-label={editing ? 'Correct the text' : 'Transcribe again'}>
+      {editing ? (
+        <>
+          <label className="sr-only" htmlFor={`fix-${ids[0]}`}>Corrected text</label>
+          <textarea id={`fix-${ids[0]}`} className={ui.textarea} rows={Math.min(8, Math.max(2, Math.ceil(draft.length / 90)))} autoFocus
+            value={draft} onChange={e => { setDraft(e.target.value); setBy('user') }} />
+          <div className={s.nameRow}>
+            <button className={ui.primary} disabled={busy !== null || !draft.trim() || draft.trim() === text} onClick={() => save(draft.trim(), by)}>Save</button>
+            <button className={ui.btnSmall} onClick={onClose}>Cancel</button>
+            {original && <button className={ui.btnSmall} disabled={busy !== null} title={original}
+              onClick={() => { setBusy('revert'); api.revertLine(ids[0]).then(onReverted).catch(e => { setError(String(e)); setBusy(null) }) }}>Put back Earshot's text</button>}
+            {ids.length > 1 && <span className={ui.muted}>Saving makes these {ids.length} lines one line.</span>}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className={s.nameRow}>
+            <span className={ui.muted}>Hear this again ({Math.round(audioS)} s) with:</span>
+            <button className={ui.btnSmall} disabled={busy !== null} onClick={() => redo('local')}
+              title={options?.local.note}>{busy === 'local' ? 'Listening…' : `${options?.local.model ?? 'Whisper large-v3'} on this Mac`}</button>
+            <button className={ui.btnSmall} disabled={busy !== null || !options?.cloud.available} onClick={() => redo('cloud')}
+              title={options?.cloud.available ? `Sends these ${Math.round(audioS)} s of audio to OpenAI` : 'Set OPENAI_API_KEY in .env and restart Earshot'}>
+              {busy === 'cloud' ? 'Sending…' : `OpenAI ${options?.cloud.model ?? ''}`}</button>
+            <button className={ui.btnSmall} onClick={onClose}>Cancel</button>
+          </div>
+          {options && <span className={ui.muted}>{options.cloud.available
+            ? `OpenAI: this paragraph's audio leaves the Mac, about $${cost.toFixed(3)}. This Mac: slower, nothing leaves it.`
+            : 'OpenAI: set OPENAI_API_KEY in .env and restart Earshot to use it.'}</span>}
+          {proposal && (
+            <div className={s.proposal}>
+              <span className={ui.muted}>{proposal.model.replace(/^local:/, 'This Mac · ').replace(/^openai:/, 'OpenAI · ')} heard:</span>
+              <div>{proposal.text || <i className={ui.muted}>nothing</i>}</div>
+              <div className={s.nameRow}>
+                <button className={ui.primary} disabled={!proposal.text || busy !== null} onClick={() => save(proposal.text, proposal.model)}>Use this</button>
+                <button className={ui.btnSmall} disabled={!proposal.text} onClick={() => { setDraft(proposal.text); setBy(proposal.model); setEditing(true) }}>Edit first</button>
+                <button className={ui.btnSmall} onClick={onClose}>Keep current</button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+      {error && <div className={ui.error}>{error}</div>}
+    </div>
+  )
+}
+
+/**
  * Names a speaker, or with `line`, says who said one line (two similar voices, e.g. siblings on one
  * phone, can share a speaker). A line of an already-named speaker starts on "this line only".
  */
@@ -343,7 +468,7 @@ export function NameSpeaker({ speaker, line, people, onClose, onSaved }: {
   async function save(body: { personId?: number | null; name?: string; me?: boolean }) {
     setBusy(true)
     try {
-      if (oneLine) for (const id of line!.ids ?? [line!.id]) await api.assignLine(id, { ...body, addToLibrary })
+      if (oneLine) await api.assignLines(line!.ids ?? [line!.id], { ...body, addToLibrary })
       else await api.assignCluster(speaker.clusterId, { ...body, addToLibrary })
       onSaved()
     } catch (e) { setError(String(e)); setBusy(false) }
@@ -353,7 +478,7 @@ export function NameSpeaker({ speaker, line, people, onClose, onSaved }: {
   return (
     <div className={s.namePanel} role="group" aria-label={oneLine ? 'Who said this line' : `Name ${speaker.name}`}>
       <div className={s.namePanelHead}>
-        <b>{oneLine ? 'Who said this line?' : speaker.recognised ? `Is this ${speaker.name}?` : `Who is ${speaker.name}?`}</b>
+        <b>{oneLine ? ((line?.ids?.length ?? 1) > 1 ? 'Who said these lines?' : 'Who said this line?') : speaker.recognised ? `Is this ${speaker.name}?` : `Who is ${speaker.name}?`}</b>
         <span className={ui.muted}>{oneLine
           ? `now ${speaker.name}`
           : `${Math.round(speaker.speechS)} s of speech${speaker.recognised && speaker.matchScore !== null ? ` · recognised by voice (${speaker.matchScore.toFixed(2)})` : ''}`}</span>

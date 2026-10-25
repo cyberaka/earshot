@@ -353,10 +353,11 @@ public class MeetingService {
 				String channel = ev.get("channel").asString();
 				double st = ev.get("start_s").asDouble(), e = ev.get("end_s").asDouble();
 				Long clusterId = ev.path("speaker").isString() ? cluster(l, channel, ev.get("speaker").asString()) : null;
+				String text = vocabulary.correct(ev.get("text").asString()); // the user's remembered corrections (R-4)
 				long id = db.sql("""
 						INSERT INTO segment (conversation_id, speaker_cluster_id, channel, live, start_s, end_s, text, words_json, confidence)
 						VALUES (:c, :sc, :ch, true, :s, :e, :t, CAST(:w AS jsonb), :p) RETURNING id""").param("c", l.conversationId)
-						.param("sc", clusterId).param("ch", channel).param("s", st).param("e", e).param("t", ev.get("text").asString())
+						.param("sc", clusterId).param("ch", channel).param("s", st).param("e", e).param("t", text)
 						.param("w", ev.get("words").toString()).param("p", ev.path("confidence").asDouble()).query(Long.class).single();
 				if (ev.path("key").isString()) {
 					l.segments.put(ev.get("key").asString(), id);
@@ -376,7 +377,7 @@ public class MeetingService {
 				seg.put("key", key);
 				seg.put("clusterId", clusterId);
 				seg.put("channel", channel);
-				seg.put("text", ev.get("text").asString());
+				seg.put("text", text);
 				seg.put("live", true);
 				sockets.broadcast(l.meetingId, Map.of("type", "segment", "segment", seg));
 				transcript.changed(l.meetingId);

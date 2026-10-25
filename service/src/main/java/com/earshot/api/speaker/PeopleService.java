@@ -119,6 +119,35 @@ public class PeopleService {
 	 */
 	@Transactional
 	public long[] assignLine(long segmentId, Long personId, String newName, boolean me, boolean remember) {
+		long[] moved = moveLine(segmentId, personId, newName, me, remember);
+		reexport("SELECT local_date FROM conversation c JOIN segment s ON s.conversation_id = c.id WHERE s.id = " + segmentId);
+		return moved;
+	}
+
+	/**
+	 * A run of lines said by one person (owner request R-4: "from this line to that line: Thanveer"):
+	 * each line moves as {@link #assignLine} moves one, and the day is written out once. Returns
+	 * {from, into} per line.
+	 */
+	@Transactional
+	public List<long[]> assignLines(List<Long> segmentIds, Long personId, String newName, boolean me, boolean remember) {
+		if (segmentIds == null || segmentIds.isEmpty()) {
+			throw new IllegalArgumentException("No lines given.");
+		}
+		// A new name is created once, by the first line; the rest go to that person.
+		long[] first = moveLine(segmentIds.getFirst(), personId, newName, me, remember);
+		long target = db.sql("SELECT person_id FROM speaker_cluster WHERE id = :id").param("id", first[1]).query(Long.class).single();
+		var out = new java.util.ArrayList<long[]>();
+		out.add(first);
+		for (long id : segmentIds.subList(1, segmentIds.size())) {
+			out.add(moveLine(id, target, null, false, remember));
+		}
+		reexport("SELECT DISTINCT c.local_date FROM conversation c JOIN segment s ON s.conversation_id = c.id WHERE s.id IN ("
+				+ String.join(",", segmentIds.stream().map(String::valueOf).toList()) + ")");
+		return out;
+	}
+
+	private long[] moveLine(long segmentId, Long personId, String newName, boolean me, boolean remember) {
 		var seg = db.sql("SELECT conversation_id, channel, speaker_cluster_id FROM segment WHERE id = :id").param("id", segmentId)
 				.query((rs, i) -> new Object[] { rs.getLong(1), rs.getString(2), (Long) rs.getObject(3) }).optional()
 				.orElseThrow(() -> new IllegalArgumentException("No such line."));
@@ -146,7 +175,6 @@ public class PeopleService {
 					  AND NOT EXISTS (SELECT 1 FROM segment s WHERE s.speaker_cluster_id = sc.id)""").param("id", from).update();
 		}
 		log.info("event=line_assigned segment={} from={} into={} person={} remember={}", segmentId, from, into, target, remember);
-		reexport("SELECT local_date FROM conversation WHERE id = " + conv);
 		return new long[] { from == null ? -1 : from, into };
 	}
 
