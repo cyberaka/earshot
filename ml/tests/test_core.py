@@ -249,3 +249,23 @@ def test_long_speech_is_embedded_in_pieces():
     assert speakers.piece_bounds([sr * 100] * 9, sr * 300) == [(0, 3), (3, 6), (6, 9)]
     assert speakers.piece_bounds([sr * 10], sr * 300) == [(0, 1)]
     assert speakers.piece_bounds([sr * 400, sr * 10], sr * 300) == [(0, 1), (1, 2)]
+
+
+def test_batch_diarizer_is_unloaded_after_use(monkeypatch):
+    # Kept loaded, community-1 left the speech engine at 6 GB and the next live meeting swapping (25 Oct).
+    from earshot_ml import speakers
+
+    class Pipe:
+        def to(self, _device):
+            return self
+
+    loads = []
+    monkeypatch.setattr(speakers, "_pipeline", None)
+    monkeypatch.setattr(speakers, "_pipeline_missing", False)
+    monkeypatch.setattr("pyannote.audio.Pipeline.from_pretrained", lambda _name: loads.append(1) or Pipe())
+    monkeypatch.setattr(speakers, "_diarize_pipeline", lambda _p, _s, off: [{"start": off, "end": off + 1.0, "speaker": "A"}])
+    monkeypatch.setattr(speakers, "embed_ranges", lambda *_a: np.ones(4, dtype=np.float32))
+    for _ in range(2):
+        out = speakers.diarize(np.zeros(SAMPLE_RATE, dtype=np.float32), [[0.0, 1.0]], 0.0)
+        assert out["backend"] == "community-1" and speakers._pipeline is None
+    assert len(loads) == 2

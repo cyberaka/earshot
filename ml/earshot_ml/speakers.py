@@ -16,7 +16,7 @@ log = logging.getLogger(__name__)
 _lock = threading.RLock()
 _embedder = None
 _pipeline = None
-_pipeline_tried = False
+_pipeline_missing = False  # not accepted or not cached: do not try again until restart
 
 
 def _device():
@@ -81,22 +81,34 @@ def embed_ranges(samples: np.ndarray, ranges: list[tuple[float, float]], offset:
 
 
 def _community_pipeline():
-    global _pipeline, _pipeline_tried
+    global _pipeline, _pipeline_missing
     with _lock:
-        if not _pipeline_tried:
-            _pipeline_tried = True
+        if _pipeline is None and not _pipeline_missing:
             try:
                 from pyannote.audio import Pipeline
                 _pipeline = Pipeline.from_pretrained(DIARIZATION_MODEL)
                 _pipeline.to(_device())
                 log.info("event=diarizer_loaded model=%s", DIARIZATION_MODEL)
             except Exception as e:  # not accepted or not cached yet
+                _pipeline_missing = True
                 log.warning("event=diarizer_fallback reason=%s", type(e).__name__)
         return _pipeline
 
 
-def backend() -> str:
-    return "community-1" if _community_pipeline() is not None else "embedding-clustering"
+def unload_pipeline() -> None:
+    """Batch diarization done: community-1 holds ~3 GB that a 16 GB Mac needs for the next live
+    meeting (measured 2026-10-25: the speech engine at 6.0 GB with it kept, 2.6 GB without, and
+    live lag up to 15 s while swapping). Loading it again from the local cache takes a few seconds."""
+    global _pipeline
+    with _lock:
+        if _pipeline is None:
+            return
+        _pipeline = None
+    import gc
+    gc.collect()
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+    log.info("event=diarizer_unloaded model=%s", DIARIZATION_MODEL)
 
 
 def diarize(samples: np.ndarray, regions: list[list[float]], offset: float, threshold: float = 0.68) -> dict:
@@ -105,8 +117,13 @@ def diarize(samples: np.ndarray, regions: list[list[float]], offset: float, thre
     `regions` are VAD speech regions in file time; `offset` is the file time of samples[0].
     """
     pipe = _community_pipeline()
+    backend = "community-1" if pipe is not None else "embedding-clustering"
     if pipe is not None:
-        turns = _diarize_pipeline(pipe, samples, offset)
+        try:
+            turns = _diarize_pipeline(pipe, samples, offset)
+        finally:
+            del pipe
+            unload_pipeline()
     else:
         turns = _diarize_clustering(samples, regions, offset, threshold)
     clusters = []
@@ -118,7 +135,7 @@ def diarize(samples: np.ndarray, regions: list[list[float]], offset: float, thre
         clusters.append({"label": label, "speech_s": round(speech, 2),
                          "embedding": embed_ranges(samples, mine, offset).round(6).tolist()})
     keep = {c["label"] for c in clusters}
-    return {"backend": backend(), "turns": [t for t in turns if t["speaker"] in keep], "clusters": clusters}
+    return {"backend": backend, "turns": [t for t in turns if t["speaker"] in keep], "clusters": clusters}
 
 
 def _diarize_pipeline(pipe, samples, offset):

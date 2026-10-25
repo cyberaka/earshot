@@ -6,6 +6,7 @@ For the post-call huddle on 2026-10-24, start with **[Huddle summary](#huddle-su
 
 | # | Bug | Severity | Status |
 |---|-----|----------|--------|
+| B-18 | Live lag up to 111 s on the 16 GB Mac: the speech engine swapped out. pyannote stayed loaded after Re-transcribe (6.0 GB, was 2.6) beside other apps' memory | High | **Fixed** 2026-10-25 (Earshot's part) |
 | B-17 | Re-transcribe/import lost the instructor's name: a speaker's 14 min embedded in one go gave a broken voice fingerprint (0.04–0.23 against their own voice) | High | **Fixed** 2026-10-25 |
 | B-16 | Short fragments and junk lines ("center." alone; "कि", "soft.", "Bye, tool.") | Low | Open |
 | B-15 | Another student's answer labelled as the user: Earshot matched the group to the user's voice at 0.66 (threshold 0.6); no "by voice" tag shown for Me | Medium | Open |
@@ -25,6 +26,23 @@ For the post-call huddle on 2026-10-24, start with **[Huddle summary](#huddle-su
 | B-1 | ML process memory grows without bound; live transcription crawls | High | **Fixed** 2026-10-24: cache capped, memory shown |
 
 ---
+
+## B-18: Live lag up to 111 s while the speech engine was swapped out
+
+- **Found by** `eval/e2e_class.py` (3 min of the ISB class replayed live), 2026-10-25.
+- **Seen:** 2 live lines in 3 minutes, lag up to 111 s, transcription 36× slower than real time. Stop's catch-up filled in every line, so nothing was lost.
+- **Measured cause:** swap was 21.8 of 22.5 GB used. The speech engine needed 5.7 GB but had only 23 MB of it in RAM.
+  - Other apps' memory: LM Studio's llama-server held 4.5 GB, and Docker Desktop's VM 8.2 GB (Earshot does not use Docker).
+  - Earshot's own part: pyannote community-1 stayed loaded after Re-transcribe, which kept the engine at 6.0 GB against 2.6 GB before.
+- **Fix:** pyannote is unloaded after each batch diarization (`speakers.unload_pipeline`, test `test_batch_diarizer_is_unloaded_after_use`). Loading it again from the local cache takes a few seconds.
+- **Results with the LM Studio models unloaded:**
+
+  | Run | Max lag | Typical lag |
+  |---|---|---|
+  | Before the fix | 15.3 s | 5.3 s |
+  | After the fix, speech engine restarted | 6.2 s | 2.6 s |
+
+  After the fix all 10 checks passed. Once pyannote is unloaded the engine sits at 3.8 GB, not back to 2.6 GB.
 
 ## B-17: Re-transcribe lost the instructor's name
 
