@@ -5,8 +5,9 @@ import { useHealth } from '../components/Shell'
 import ui from '../components/ui.module.css'
 import s from './Import.module.css'
 
-const STAGES = ['diarized', 'identified', 'transcribed', 'enriched', 'indexed', 'exported']
-const STAGE_LABEL: Record<string, string> = { diarized: 'Diarize', identified: 'Identify', transcribed: 'Transcribe', enriched: 'Enrich', indexed: 'Index', exported: 'Export' }
+// The steps that do work; "enriched" and "indexed" are no-ops since insights became click-only (D-10).
+const STEPS = ['diarized', 'identified', 'transcribed', 'exported']
+const DOING: Record<string, string> = { diarized: 'Separating speakers', identified: 'Recognising voices', transcribed: 'Transcribing', enriched: 'Saving', indexed: 'Saving', exported: 'Saving' }
 const ZONES = ['Asia/Kolkata', 'Asia/Dubai', 'Asia/Singapore', 'Europe/London', 'Europe/Berlin', 'America/New_York', 'America/Los_Angeles', 'UTC']
 
 function gb(bytes: number) { return `${(bytes / 1024 ** 3).toFixed(0)} GB` }
@@ -132,55 +133,73 @@ export default function Import() {
 
       <section className={ui.card}>
         <div className={s.settingsRow}>
-          <h2 className={s.h2}>Processing</h2>
-          <span className={ui.muted} style={{ marginLeft: 'auto' }}>One ML job at a time · pauses automatically during meetings</span>
+          <h2 className={s.h2}>Imported conversations</h2>
+          <span className={ui.muted} style={{ marginLeft: 'auto' }}>One file is processed at a time, and it waits while a meeting is live.</span>
         </div>
-        {convJobs.length === 0 ? <span className={ui.muted}>Nothing processed yet.</span> : (
+        {convJobs.length === 0 ? <span className={ui.muted}>Nothing imported yet.</span> : (
           <div className={ui.tableWrap}>
-            <div className={s.grid}>
-              {convJobs.map(j => (
-                <div key={j.id} className={s.jobRow}>
-                  <span className={s.jobLabel}>
-                    <b className="mono">{j.conversation_started_at ? new Date(j.conversation_started_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: j.time_zone ?? undefined }) : ''}</b>
-                    {' '}{j.title ? <Link to={`/day/${j.local_date}/${j.conversation_id}`}>{j.title}</Link> : j.type === 'post_meeting' ? 'Meeting' : 'Conversation'}
-                    {j.status === 'failed' && <span className={s.failed} title={j.error ?? ''}> · failed</span>}
-                    {j.status === 'queued' && j.error && <span className={ui.muted} title={j.error}> · waiting</span>}
-                  </span>
-                  <div className={s.stages}>
-                    {STAGES.map(st => {
-                      const state = stageState(j, st)
-                      return <span key={st} className={s[state]}>{STAGE_LABEL[st]}</span>
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
+            <table className={`${ui.table} ${s.jobs}`}>
+              <thead><tr><th>When</th><th>Conversation</th><th className={s.num}>Length</th><th className={s.num}>Speakers</th><th className={s.num}>Lines</th><th>Status</th></tr></thead>
+              <tbody>
+                {convJobs.map(j => (
+                  <tr key={j.id}>
+                    <td className={s.when}>{j.conversation_started_at ? new Date(j.conversation_started_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: j.time_zone ?? undefined }) : ''}</td>
+                    <td>
+                      {j.title && !j.is_ambient ? <Link to={`/day/${j.local_date}/${j.conversation_id}`}>{j.title}</Link> : <Link to={`/day/${j.local_date}/${j.conversation_id}`}>Untitled conversation</Link>}
+                      {j.original_name && <div className={ui.muted}>{j.original_name}</div>}
+                    </td>
+                    <td className={s.num}>{j.duration_s ? length(j.duration_s) : ''}</td>
+                    <td className={s.num}>{j.is_ambient || !j.speakers ? '' : j.speakers}</td>
+                    <td className={s.num}>{j.is_ambient || !j.lines ? '' : j.lines}</td>
+                    <td><Status j={j} onTranscribe={() => api.transcribeAmbient(j.conversation_id!).then(loadJobs)} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
-        <div className={s.legendRow}>
-          <span><i className={s.done} />Done</span><span><i className={s.running} />Running</span><span><i className={s.waiting} />Waiting</span><span><i className={s.skipped} />Skipped (ambient)</span>
-        </div>
       </section>
     </>
   )
 }
 
+/** Imported recordings only: meetings show their own progress on the meeting page. */
 function latestPerConversation(jobs: Job[]) {
   const seen = new Set<number>()
-  return jobs.filter(j => (j.type === 'conversation' || j.type === 'post_meeting') && j.conversation_id !== null)
+  return jobs.filter(j => j.type === 'conversation' && j.source_type === 'recorder' && j.conversation_id !== null)
     .filter(j => { if (seen.has(j.conversation_id!)) return false; seen.add(j.conversation_id!); return true })
-    .slice(0, 25)
+    .sort((a, b) => (b.conversation_started_at ?? '').localeCompare(a.conversation_started_at ?? ''))
+    .slice(0, 60)
 }
 
-function stageState(j: Job, st: string): 'done' | 'running' | 'waiting' | 'skipped' {
-  const cs = j.conversation_stage ?? 'segmented'
-  const order = ['segmented', 'live', ...STAGES]
-  const doneIdx = order.indexOf(cs === 'live' ? 'segmented' : cs)
-  const idx = order.indexOf(st)
-  if (j.is_ambient && idx > order.indexOf('identified')) return 'skipped'
-  if (idx <= doneIdx) return 'done'
-  if (j.status === 'running' && idx === doneIdx + 1) return 'running'
-  return 'waiting'
+function length(sec: number) {
+  const m = Math.round(sec / 60)
+  return m < 1 ? `${Math.round(sec)} s` : m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`
+}
+
+function Status({ j, onTranscribe }: { j: Job; onTranscribe: () => void }) {
+  const stage = j.conversation_stage ?? 'segmented'
+  if (j.status === 'failed') return <span className={s.failed} title={j.error ?? ''}>Failed</span>
+  if (j.is_ambient && j.status === 'done') {
+    return (
+      <span className={s.status}>
+        <span className={ui.muted}>Skipped: background speech</span>
+        <button className={ui.btnSmall} onClick={onTranscribe}>Transcribe</button>
+      </span>
+    )
+  }
+  if (j.status === 'done') return <span className={s.ok}>Done</span>
+  const step = Math.max(0, STEPS.indexOf(stage) + 1)
+  const next = STEPS[Math.min(step, STEPS.length - 1)]
+  if (j.status === 'running') {
+    return (
+      <span className={s.progress}>
+        <span>{DOING[next]}…</span>
+        <span className={s.bar}><i style={{ width: `${(step / STEPS.length) * 100}%` }} /></span>
+      </span>
+    )
+  }
+  return <span className={ui.muted} title={j.error ?? ''}>{j.error ? 'Waiting for the meeting to end' : 'Waiting'}</span>
 }
 
 function Storage({ health }: { health: Health | null }) {

@@ -91,6 +91,7 @@ export interface Job {
   updated_at: string; recording_id: number | null; conversation_id: number | null; meeting_id: number | null
   original_name: string | null; title: string | null; conversation_started_at: string | null
   conversation_stage: string | null; is_ambient: boolean | null; time_zone: string | null; local_date: string | null
+  source_type: string | null; duration_s: number | null; lines: number | null; speakers: number | null
 }
 
 /**

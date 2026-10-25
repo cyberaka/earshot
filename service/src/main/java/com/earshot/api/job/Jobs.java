@@ -72,11 +72,13 @@ public class Jobs {
 	public List<Map<String, Object>> recent(int limit) {
 		return db.sql("""
 				SELECT j.id, j.type, j.status, j.stage, j.attempts, j.error, j.updated_at, j.recording_id, j.conversation_id,
-				       j.meeting_id, r.original_name, c.title, c.local_date::text AS local_date, c.started_at AS conversation_started_at, c.stage AS conversation_stage,
-				       c.is_ambient, c.time_zone
+				       j.meeting_id, COALESCE(r.original_name, c.file_name) AS original_name, c.title, c.local_date::text AS local_date, c.started_at AS conversation_started_at, c.stage AS conversation_stage,
+				       c.is_ambient, c.time_zone, COALESCE(r.source_type, c.source_type) AS source_type, c.end_offset_s - c.start_offset_s AS duration_s,
+				       (SELECT count(*) FROM segment s WHERE s.conversation_id = c.id AND NOT s.live) AS lines,
+				       (SELECT count(DISTINCT s.speaker_cluster_id) FROM segment s WHERE s.conversation_id = c.id AND NOT s.live) AS speakers
 				FROM job j
 				LEFT JOIN recording r ON r.id = j.recording_id
-				LEFT JOIN (SELECT c.*, r2.time_zone FROM conversation c JOIN recording r2 ON r2.id = c.recording_id) c ON c.id = j.conversation_id
+				LEFT JOIN (SELECT c.*, r2.time_zone, r2.source_type, r2.original_name AS file_name FROM conversation c JOIN recording r2 ON r2.id = c.recording_id) c ON c.id = j.conversation_id
 				ORDER BY j.id DESC LIMIT :n""").param("n", limit).query().listOfRows();
 	}
 
