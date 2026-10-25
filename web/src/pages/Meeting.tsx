@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import SummarizeButton from '../components/Summarize'
-import { api, LANGUAGES, callReady, channelLabels, deviceRoles, turnBands, fmtElapsed, nearest, speakerColor, type AttachmentView, type Citation, type Devices, type MeetingSummary, type MeetingView, type NoteView, type Person, type SegmentView, type SpeakerView } from '../api'
+import { api, LANGUAGES, callReady, channelLabels, deviceRoles, groupTurns, turnBands, fmtElapsed, nearest, speakerColor, type AttachmentView, type Citation, type Devices, type MeetingSummary, type MeetingView, type NoteView, type Person, type SegmentView, type SpeakerView } from '../api'
 import { Answer, useAsk } from '../components/AskBox'
 import { NoteEditor, NoteItem } from '../components/Notes'
 import { NameSpeaker } from './Today'
@@ -452,7 +452,7 @@ function LiveMeeting({ id }: { id: number }) {
   const [speakers, setSpeakers] = useState<SpeakerView[]>([])
   const [people, setPeople] = useState<Person[]>([])
   const [naming, setNaming] = useState<SpeakerView | null>(null)
-  const [namingLine, setNamingLine] = useState<{ id: number; text: string } | null>(null)
+  const [namingLine, setNamingLine] = useState<{ id: number; ids: number[]; text: string } | null>(null)
   const [summary, setSummary] = useState<MeetingSummary | null>(null)
   const [shots, setShots] = useState<AttachmentView[]>([])
   const [editingNames, setEditingNames] = useState(false)
@@ -683,25 +683,34 @@ function LiveMeeting({ id }: { id: number }) {
           )}
           <div className={s.lines} ref={listRef}>
             {segments.length === 0 && <div className={ui.muted}>{m.live ? 'Listening… text appears a few seconds after each sentence.' : 'No transcript.'}</div>}
-            {(() => { const bands = turnBands(segments, x => x.clusterId ?? x.key); return segments.map((seg, i) => {
+            {(() => {
+              const partOf = (x: SegmentView) => (x as SegmentView & { part?: number }).part ?? 1
+              const index = new Map(segments.map((x, i) => [x.id, i]))
+              const groups = groupTurns(segments, x => `${partOf(x)}:${x.clusterId ?? x.key}`, (_x, i) => shotsBefore.has(i))
+              const bands = turnBands(groups, g => g[0].clusterId ?? g[0].key)
+              return groups.map((g, gi) => {
+              const seg = g[0]
+              const i = index.get(seg.id)!
+              const ids = g.map(x => x.id)
+              const text = g.map(x => x.text).join(' ')
               // Names come from the speaker list, so naming or regrouping relabels every line at once.
               const sp = seg.clusterId !== null ? speakerById.get(seg.clusterId) : undefined
-              const part = (seg as SegmentView & { part?: number }).part ?? 1
-              const prevPart = i > 0 ? (segments[i - 1] as SegmentView & { part?: number }).part ?? 1 : part
+              const part = partOf(seg)
+              const prevPart = i > 0 ? partOf(segments[i - 1]) : part
               const divider = i > 0 && part !== prevPart ? m.parts.find(p => p.part === part) : undefined
               return (
                 <div key={seg.id}>
                 {shotsBefore.get(i)?.map(shotLine)}
                 {divider && <div className={s.partDivider}>{resumedLabel(m.parts, divider.part)}</div>}
-                <div ref={el => { if (el) rows.current.set(seg.id, el) }} className={cited.has(seg.id) ? s.lineCited : bands[i] ? s.lineBand : s.line}>
+                <div ref={el => { if (el) ids.forEach(id => rows.current.set(id, el)) }} className={ids.some(id => cited.has(id)) ? s.lineCited : bands[gi] ? s.lineBand : s.line}>
                   <span className={s.clock} title={timeMode === 'clock' ? `${fmtElapsed(seg.elapsedS)} from the start` : `at ${seg.clock}`}>
                     {timeMode === 'clock' ? seg.clock : fmtElapsed(seg.elapsedS)}
                   </span>
                   {sp
-                    ? <button className={s.whoBtn} style={{ color: speakerColor(sp.key).fg }} title={`${sp.name}: who said this line?`}
-                      onClick={() => { setNaming(sp); setNamingLine({ id: seg.id, text: seg.text }) }}>{sp.name}</button>
+                    ? <button className={s.whoBtn} style={{ color: speakerColor(sp.key).fg }} title={`${sp.name}: who said this?`}
+                      onClick={() => { setNaming(sp); setNamingLine({ id: seg.id, ids, text }) }}>{sp.name}</button>
                     : <span className={s.who} style={{ color: speakerColor(seg.key).fg }} title={seg.speaker}>{seg.speaker}</span>}
-                  <span className={s.text}>{seg.text}</span>
+                  <span className={s.text}>{text}</span>
                 </div>
                 {naming && namingLine?.id === seg.id && (
                   <div className={s.lineNaming}>

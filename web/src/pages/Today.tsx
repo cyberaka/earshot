@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { api, nearest, turnBands, fmtDuration, fmtElapsed, speakerColor, todayLocal, type ConversationDetail, type DayView, type Provider, type NoteView, type Person, type SpeakerView } from '../api'
+import { api, groupTurns, nearest, turnBands, fmtDuration, fmtElapsed, speakerColor, todayLocal, type ConversationDetail, type DayView, type Provider, type NoteView, type Person, type SpeakerView } from '../api'
 import AskBox from '../components/AskBox'
 import SummarizeButton from '../components/Summarize'
 import { useHealth } from '../components/Shell'
@@ -121,7 +121,7 @@ function Conversation({ id, onChanged, seek, onSeekDone, summaryWith, liveNow }:
   const [d, setD] = useState<ConversationDetail | null>(null)
   const [people, setPeople] = useState<Person[]>([])
   const [naming, setNaming] = useState<SpeakerView | null>(null)
-  const [namingLine, setNamingLine] = useState<{ id: number; text: string } | null>(null)
+  const [namingLine, setNamingLine] = useState<{ id: number; ids: number[]; text: string } | null>(null)
   const [markMe, setMarkMe] = useState<Set<number> | null>(null)
   const [highlight, setHighlight] = useState<number | null>(null)
   const [pinTo, setPinTo] = useState<number | null>(null)
@@ -252,30 +252,40 @@ function Conversation({ id, onChanged, seek, onSeekDone, summaryWith, liveNow }:
           </div>
           <audio ref={audio} hidden />
           <div>
-            {(() => { const bands = turnBands(d.segments, x => x.clusterId ?? x.key); return d.segments.map((seg, i) => {
+            {(() => {
               const speakerById = new Map(d.speakers.map(sp => [sp.clusterId, sp]))
+              const shotAt = (d.attachments ?? []).map(a => a.anchorS)
+              const groups = groupTurns(d.segments, x => x.clusterId ?? x.key,
+                (x, i) => i > 0 && shotAt.some(t => t <= x.startS && t > d.segments[i - 1].startS))
+              const bands = turnBands(groups, g => g[0].clusterId ?? g[0].key)
+              return groups.map((g, i) => {
+              const seg = g[0]
+              const ids = g.map(x => x.id)
+              const text = g.map(x => x.text).join(' ')
               const col = speakerColor(seg.key)
-              // Screenshots (R-1) go before the first line that starts after them; the rest after the last line.
-              const shots = (d.attachments ?? []).filter(a => a.anchorS <= seg.startS && (i === 0 || a.anchorS > d.segments[i - 1].startS))
+              // Screenshots (R-1) go before the first row that starts after them; the rest after the last row.
+              const shots = (d.attachments ?? []).filter(a => a.anchorS <= seg.startS && (i === 0 || a.anchorS > groups[i - 1][0].startS))
+              const marked = markMe !== null && ids.every(id => markMe.has(id))
               return (
                 <div key={seg.id}>
                 {shots.map(a => <ScreenshotLine key={`shot-${a.id}`} shot={a} editable onChanged={load}
                   time={timeMode === 'clock' ? a.clock : fmtElapsed(a.elapsedS)} />)}
-                <div ref={el => { if (el) rows.current.set(seg.id, el) }} className={highlight === seg.id ? s.lineCited : bands[i] ? s.lineBand : s.line}>
+                <div ref={el => { if (el) ids.forEach(id => rows.current.set(id, el)) }}
+                  className={highlight !== null && ids.includes(highlight) ? s.lineCited : bands[i] ? s.lineBand : s.line}>
                   {markMe
-                    ? <input type="checkbox" aria-label={`Mark line at ${seg.clock} as me`} className={s.markBox} checked={markMe.has(seg.id)}
-                      onChange={e => { const n = new Set(markMe); if (e.target.checked) n.add(seg.id); else n.delete(seg.id); setMarkMe(n) }} />
-                    : <button className={s.play} aria-label={`Play from ${seg.clock}`} disabled={!d.hasAudio} onClick={() => play(seg.startS, seg.endS + 0.3)}>
+                    ? <input type="checkbox" aria-label={`Mark line at ${seg.clock} as me`} className={s.markBox} checked={marked}
+                      onChange={e => { const n = new Set(markMe); ids.forEach(id => e.target.checked ? n.add(id) : n.delete(id)); setMarkMe(n) }} />
+                    : <button className={s.play} aria-label={`Play from ${seg.clock}`} disabled={!d.hasAudio} onClick={() => play(seg.startS, g[g.length - 1].endS + 0.3)}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4l13 8-13 8z" /></svg>
                     </button>}
                   <span className={s.clock} title={timeMode === 'clock' ? `${fmtElapsed(seg.elapsedS)} from the start` : `at ${seg.clock}`}>
                     {timeMode === 'clock' ? seg.clock : fmtElapsed(seg.elapsedS)}
                   </span>
                   {seg.clusterId !== null && speakerById.get(seg.clusterId) && !markMe
-                    ? <button className={s.whoBtn} style={{ color: col.fg }} title="Who said this line?"
-                      onClick={() => { setNaming(speakerById.get(seg.clusterId!)!); setNamingLine({ id: seg.id, text: seg.text }) }}>{seg.speaker}</button>
+                    ? <button className={s.whoBtn} style={{ color: col.fg }} title="Who said this?"
+                      onClick={() => { setNaming(speakerById.get(seg.clusterId!)!); setNamingLine({ id: seg.id, ids, text }) }}>{seg.speaker}</button>
                     : <span className={s.who} style={{ color: col.fg }}>{seg.speaker}</span>}
-                  <span className={s.text}>{seg.text}</span>
+                  <span className={s.text}>{text}</span>
                   {!markMe && <button className={s.noteBtn} aria-label={`Add a note at ${seg.clock}`} title="Add a note here"
                     onClick={() => setPinTo(pinTo === seg.id ? null : seg.id)}>+ note</button>}
                 </div>
@@ -285,7 +295,7 @@ function Conversation({ id, onChanged, seek, onSeekDone, summaryWith, liveNow }:
                       onSaved={() => { setNaming(null); setNamingLine(null); load(); onChanged() }} />
                   </div>
                 )}
-                {(pinned.get(seg.id) ?? []).map(n => <div key={n.id} className={s.pinned}><NoteItem note={n} onChanged={load} /></div>)}
+                {ids.flatMap(id => pinned.get(id) ?? []).map(n => <div key={n.id} className={s.pinned}><NoteItem note={n} onChanged={load} /></div>)}
                 {pinTo === seg.id && (
                   <div className={s.pinned}>
                     <NoteEditor placeholder={`Note at ${seg.clock}`} autoFocus onCancel={() => setPinTo(null)}
@@ -321,7 +331,7 @@ export function ConfirmButton({ label, confirm, onConfirm }: { label: string; co
  * phone, can share a speaker). A line of an already-named speaker starts on "this line only".
  */
 export function NameSpeaker({ speaker, line, people, onClose, onSaved }: {
-  speaker: SpeakerView; line?: { id: number; text: string } | null; people: Person[]; onClose: () => void; onSaved: () => void
+  speaker: SpeakerView; line?: { id: number; ids?: number[]; text: string } | null; people: Person[]; onClose: () => void; onSaved: () => void
 }) {
   const [name, setName] = useState('')
   const [addToLibrary, setAdd] = useState(true)
@@ -333,7 +343,7 @@ export function NameSpeaker({ speaker, line, people, onClose, onSaved }: {
   async function save(body: { personId?: number | null; name?: string; me?: boolean }) {
     setBusy(true)
     try {
-      if (oneLine) await api.assignLine(line!.id, { ...body, addToLibrary })
+      if (oneLine) for (const id of line!.ids ?? [line!.id]) await api.assignLine(id, { ...body, addToLibrary })
       else await api.assignCluster(speaker.clusterId, { ...body, addToLibrary })
       onSaved()
     } catch (e) { setError(String(e)); setBusy(false) }

@@ -58,10 +58,16 @@ public final class Aligner {
 		var smoothed = smooth(turns);
 		var out = new ArrayList<Seg>();
 		for (var words : asrSegments) {
+			var speakers = new ArrayList<String>();
+			for (Word w : words) {
+				speakers.add(smoothed.isEmpty() ? "SPEAKER_00" : speakerFor(w, smoothed));
+			}
+			keepSentenceTogether(words, speakers);
 			String cur = null;
 			var buf = new ArrayList<Word>();
-			for (Word w : words) {
-				String spk = smoothed.isEmpty() ? "SPEAKER_00" : speakerFor(w, smoothed);
+			for (int i = 0; i < words.size(); i++) {
+				Word w = words.get(i);
+				String spk = speakers.get(i);
 				boolean gap = !buf.isEmpty() && w.s() - buf.getLast().e() > gapSplitS;
 				if (cur != null && (!spk.equals(cur) || gap)) {
 					out.add(toSeg(cur, buf));
@@ -75,6 +81,29 @@ public final class Aligner {
 			}
 		}
 		return out;
+	}
+
+	/**
+	 * Inside one Whisper segment, a run of at most two words lasting under a second takes the speaker
+	 * of the words around it: turn edges land a word early or late, and cut sentences mid-way ("I felt"
+	 * / "good", "I" / "was at a place…", 23 Oct recorder day).
+	 */
+	static void keepSentenceTogether(List<Word> words, List<String> speakers) {
+		int i = 0;
+		while (i < words.size()) {
+			int j = i;
+			while (j + 1 < words.size() && speakers.get(j + 1).equals(speakers.get(i))) {
+				j++;
+			}
+			boolean stray = j - i + 1 <= 2 && words.get(j).e() - words.get(i).s() < 1.0;
+			String neighbour = i > 0 ? speakers.get(i - 1) : j + 1 < words.size() ? speakers.get(j + 1) : null;
+			if (stray && neighbour != null) {
+				for (int k = i; k <= j; k++) {
+					speakers.set(k, neighbour);
+				}
+			}
+			i = j + 1;
+		}
 	}
 
 	private static Seg toSeg(String speaker, List<Word> words) {

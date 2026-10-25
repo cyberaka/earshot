@@ -95,6 +95,24 @@ export interface Job {
 }
 
 /**
+ * Consecutive lines of one speaker shown as one paragraph (owner, 2026-10-25: "if a single voice says
+ * a paragraph then we should show it as a paragraph"; lines cut at every Whisper segment were too
+ * short to follow). A paragraph ends at a speaker change, a pause over `maxGapS`, or where
+ * `breakBefore` says (a screenshot taken there); `maxSpanS` only stops a monologue becoming one wall of text.
+ */
+export function groupTurns<T extends { startS: number; endS: number }>(items: T[], who: (x: T) => string | number | null,
+  breakBefore: (x: T, i: number) => boolean = () => false, maxGapS = 3, maxSpanS = 180): T[][] {
+  const out: T[][] = []
+  for (const [i, x] of items.entries()) {
+    const g = out[out.length - 1]
+    const last = g?.[g.length - 1]
+    if (g && who(last) === who(x) && !breakBefore(x, i) && x.startS - last.endS <= maxGapS && x.endS - g[0].startS <= maxSpanS) g.push(x)
+    else out.push([x])
+  }
+  return out
+}
+
+/**
  * Alternate shading per speaker turn (owner, 2026-10-24): true for lines in every other turn, so the
  * eye sees where one speaker stops and the next begins.
  */
