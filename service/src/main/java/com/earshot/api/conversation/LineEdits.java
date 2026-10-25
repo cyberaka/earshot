@@ -10,7 +10,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.earshot.api.export.MarkdownExporter;
 import com.earshot.api.llm.CloudTranscriber;
@@ -40,8 +42,13 @@ public class LineEdits {
 	private final Vocabulary vocabulary;
 	private final MarkdownExporter exporter;
 	private final CloudTranscriber cloud;
+	private final TransactionTemplate tx;
+	// Paragraphs sent to OpenAI at once when a whole conversation is transcribed there.
+	private static final int CLOUD_PARALLEL = 6;
 
-	public LineEdits(JdbcClient db, JsonMapper json, MlClient ml, Vocabulary vocabulary, MarkdownExporter exporter, CloudTranscriber cloud) {
+	public LineEdits(JdbcClient db, JsonMapper json, MlClient ml, Vocabulary vocabulary, MarkdownExporter exporter, CloudTranscriber cloud,
+			PlatformTransactionManager transactions) {
+		this.tx = new TransactionTemplate(transactions);
 		this.db = db;
 		this.json = json;
 		this.ml = ml;
@@ -72,14 +79,18 @@ public class LineEdits {
 		if (lines.stream().anyMatch(l -> l.conversationId() != conv || !java.util.Objects.equals(l.clusterId(), cluster))) {
 			throw new IllegalArgumentException("A paragraph is one speaker's lines in one conversation.");
 		}
+		notBusy(conv);
+		return lines;
+	}
+
+	private void notBusy(long conversationId) {
 		boolean busy = db.sql("""
 				SELECT c.stage IN ('live', 'retranscribing')
 				       OR EXISTS (SELECT 1 FROM job j WHERE j.conversation_id = c.id AND j.status IN ('queued', 'running'))
-				FROM conversation c WHERE c.id = :c""").param("c", conv).query(Boolean.class).single();
+				FROM conversation c WHERE c.id = :c""").param("c", conversationId).query(Boolean.class).single();
 		if (busy) {
 			throw new IllegalStateException("This conversation is still being transcribed: correct it when it is done.");
 		}
-		return lines;
 	}
 
 	/**
@@ -92,6 +103,13 @@ public class LineEdits {
 			throw new IllegalArgumentException("The text is empty. To hide a line, delete the conversation's audio instead.");
 		}
 		var lines = paragraph(ids);
+		long id = write(lines, text, by);
+		exportDay(lines.getFirst().conversationId());
+		return id;
+	}
+
+	/** The paragraph becomes one line holding {@code text}; Earshot's own text is kept on it. */
+	private long write(List<Line> lines, String text, String by) {
 		var first = lines.getFirst();
 		String now = String.join(" ", lines.stream().map(Line::text).toList());
 		if (lines.size() == 1 && now.equals(text.strip())) {
@@ -116,7 +134,6 @@ public class LineEdits {
 		// Its meaning changed: search by meaning embeds it again when the user next prepares new lines.
 		db.sql("DELETE FROM segment_vec WHERE segment_id = :id").param("id", first.id()).update();
 		log.info("event=line_edited segment={} merged={} by={}", first.id(), rest.size(), by);
-		exportDay(first.conversationId());
 		return first.id();
 	}
 
@@ -170,6 +187,122 @@ public class LineEdits {
 		}
 		log.info("event=line_retranscribed segments={} engine={} audio_s={}", ids.size(), model, Math.round(end - start));
 		return new Proposal(vocabulary.correct(text), engine, model, end - start);
+	}
+
+	/** The conversation's lines as the page shows them: one speaker's run, pauses under 3 s, at most 3 minutes (web groupTurns). */
+	static List<List<Line>> paragraphs(List<Line> lines) {
+		var out = new ArrayList<List<Line>>();
+		for (Line l : lines) {
+			var g = out.isEmpty() ? null : out.getLast();
+			if (g != null && java.util.Objects.equals(g.getLast().clusterId(), l.clusterId()) && l.start() - g.getLast().end() <= 3
+					&& l.end() - g.getFirst().start() <= 180) {
+				g.add(l);
+			} else {
+				out.add(new ArrayList<>(List.of(l)));
+			}
+		}
+		return out;
+	}
+
+	private List<Line> linesOf(long conversationId) {
+		return db.sql("""
+				SELECT id, conversation_id, speaker_cluster_id, start_s, end_s, text, original_text, words_json::text
+				FROM segment WHERE conversation_id = :c AND NOT live ORDER BY start_s, id""").param("c", conversationId)
+				.query((rs, i) -> new Line(rs.getLong(1), rs.getLong(2), (Long) rs.getObject(3), rs.getDouble(4), rs.getDouble(5), rs.getString(6),
+						rs.getString(7), rs.getString(8)))
+				.list();
+	}
+
+	public record CloudPlan(int paragraphs, double audioS, double usd, boolean available, String model) {
+	}
+
+	/** What "Transcribe with OpenAI" would send, shown before the click: only the paragraphs' speech, not the silence between. */
+	public CloudPlan cloudPlan(long conversationId) {
+		var paras = paragraphs(linesOf(conversationId));
+		double audio = paras.stream().mapToDouble(g -> g.getLast().end() - g.getFirst().start()).sum();
+		return new CloudPlan(paras.size(), audio, audio / 60 * CloudTranscriber.USD_PER_MINUTE, cloud.available(), cloud.model());
+	}
+
+	public record CloudResult(int paragraphs, int changed, int unchanged, int failed, double audioS) {
+	}
+
+	/**
+	 * The whole conversation through OpenAI (owner request, 2026-10-25): each speaker's paragraph is sent
+	 * on its own, so its text lands back on the speaker found on this Mac. Applied at once, Earshot's
+	 * text kept on every line ({@link #revertCloud} puts it back); a paragraph OpenAI heard nothing in
+	 * keeps Earshot's text.
+	 */
+	public CloudResult transcribeConversation(long conversationId) throws InterruptedException {
+		if (!cloud.available()) {
+			throw new IllegalStateException("Set OPENAI_API_KEY in .env and restart Earshot to use OpenAI.");
+		}
+		notBusy(conversationId);
+		var src = db.sql("""
+				SELECT r.work_path, r.language, c.meeting_id, c.local_date FROM conversation c JOIN recording r ON r.id = c.recording_id WHERE c.id = :c""")
+				.param("c", conversationId)
+				.query((rs, i) -> new Object[] { rs.getString(1), rs.getString(2), (Long) rs.getObject(3), rs.getObject(4, java.time.LocalDate.class) })
+				.single();
+		String work = (String) src[0], language = (String) src[1];
+		if (work == null || !java.nio.file.Files.exists(java.nio.file.Path.of(work))) {
+			throw new IllegalStateException("The audio for this conversation is no longer on disk.");
+		}
+		var terms = vocabulary.forMeeting((Long) src[2]);
+		String prompt = terms.isEmpty() ? null : "Names and terms: " + String.join(", ", terms) + ".";
+		var paras = paragraphs(linesOf(conversationId));
+		var heard = new String[paras.size()];
+		var gate = new java.util.concurrent.Semaphore(CLOUD_PARALLEL);
+		long t0 = System.nanoTime();
+		try (var exec = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+			for (int i = 0; i < paras.size(); i++) {
+				int k = i;
+				exec.submit(() -> {
+					gate.acquireUninterruptibly();
+					try {
+						var g = paras.get(k);
+						heard[k] = vocabulary.correct(cloud.transcribe(wav(work, g.getFirst().start(), g.getLast().end()), language, prompt));
+					} catch (Exception e) {
+						log.warn("event=cloud_paragraph_failed conversation={} paragraph={} reason={}", conversationId, k, e.getMessage());
+					} finally {
+						gate.release();
+					}
+				});
+			}
+		}
+		int changed = 0, unchanged = 0, failed = 0;
+		double audio = 0;
+		var writes = new ArrayList<Integer>();
+		for (int i = 0; i < paras.size(); i++) {
+			var g = paras.get(i);
+			audio += g.getLast().end() - g.getFirst().start();
+			if (heard[i] == null) {
+				failed++;
+			} else if (heard[i].isBlank() || heard[i].equals(String.join(" ", g.stream().map(Line::text).toList()))) {
+				unchanged++;
+			} else {
+				writes.add(i);
+			}
+		}
+		String by = "openai:" + cloud.model();
+		tx.executeWithoutResult(st -> writes.forEach(i -> write(paras.get(i), heard[i], by)));
+		changed = writes.size();
+		db.sql("DELETE FROM segment_vec WHERE segment_id IN (SELECT id FROM segment WHERE conversation_id = :c)").param("c", conversationId).update();
+		exporter.exportDay((java.time.LocalDate) src[3]);
+		log.info("event=conversation_cloud_transcribed conversation={} paragraphs={} changed={} unchanged={} failed={} audio_s={} took_s={}",
+				conversationId, paras.size(), changed, unchanged, failed, Math.round(audio), (System.nanoTime() - t0) / 1_000_000_000);
+		return new CloudResult(paras.size(), changed, unchanged, failed, audio);
+	}
+
+	/** Puts back Earshot's text on every line OpenAI wrote in this conversation; the user's own edits stay. */
+	@Transactional
+	public int revertCloud(long conversationId) {
+		notBusy(conversationId);
+		int n = db.sql("""
+				UPDATE segment SET text = original_text, original_text = NULL, edited_by = NULL
+				WHERE conversation_id = :c AND edited_by LIKE 'openai:%' AND original_text IS NOT NULL""").param("c", conversationId).update();
+		db.sql("DELETE FROM segment_vec WHERE segment_id IN (SELECT id FROM segment WHERE conversation_id = :c)").param("c", conversationId).update();
+		exportDay(conversationId);
+		log.info("event=conversation_cloud_reverted conversation={} lines={}", conversationId, n);
+		return n;
 	}
 
 	/** Words to text: no space before punctuation that ends or continues a word. */

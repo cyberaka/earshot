@@ -56,6 +56,23 @@ public class LineController {
 		return lines.options();
 	}
 
+	/** What "Transcribe with OpenAI" would send for this conversation, and its cost (no call). */
+	@GetMapping("/conversations/{id}/cloud-transcribe")
+	public LineEdits.CloudPlan cloudPlan(@PathVariable long id) {
+		return lines.cloudPlan(id);
+	}
+
+	/** The user clicked "Transcribe with OpenAI" on a conversation. */
+	@PostMapping("/conversations/{id}/cloud-transcribe")
+	public LineEdits.CloudResult cloudTranscribe(@PathVariable long id) throws InterruptedException {
+		return lines.transcribeConversation(id);
+	}
+
+	@PostMapping("/conversations/{id}/cloud-transcribe/revert")
+	public Map<String, Object> cloudRevert(@PathVariable long id) {
+		return Map.of("lines", lines.revertCloud(id));
+	}
+
 	@GetMapping("/corrections")
 	public List<Vocabulary.Correction> corrections() {
 		return vocabulary.corrections();

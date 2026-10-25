@@ -121,3 +121,4 @@
 .edited { color: var(--muted); font-size: 12px; white-space: nowrap; cursor: help; }
 .fixPanel { composes: namePanel; }
 .proposal { display: flex; flex-direction: column; gap: 8px; border-left: 3px solid var(--accent); padding: 4px 0 4px 12px; }
+.cloudBar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 8px; }

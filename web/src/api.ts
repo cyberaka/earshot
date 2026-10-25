@@ -29,6 +29,8 @@ export interface SegmentView {
 }
 
 export interface Correction { id: number; wrong: string; fixed: string }
+export interface CloudPlan { paragraphs: number; audioS: number; usd: number; available: boolean; model: string }
+export interface CloudResult { paragraphs: number; changed: number; unchanged: number; failed: number; audioS: number }
 export interface LineProposal { text: string; engine: string; model: string; audioS: number }
 export interface RetranscribeOptions {
   local: { model: string; note: string }
@@ -290,6 +292,9 @@ export const api = {
   revertLine: (id: number) => send('POST', `/api/lines/${id}/revert`),
   retranscribeOptions: () => get<RetranscribeOptions>('/api/lines/retranscribe'),
   retranscribeLines: (ids: number[], engine: 'local' | 'cloud') => send<LineProposal>('POST', '/api/lines/retranscribe', { ids, engine }),
+  cloudPlan: (conversationId: number) => get<CloudPlan>(`/api/conversations/${conversationId}/cloud-transcribe`),
+  cloudTranscribe: (conversationId: number) => send<CloudResult>('POST', `/api/conversations/${conversationId}/cloud-transcribe`),
+  cloudRevert: (conversationId: number) => send<{ lines: number }>('POST', `/api/conversations/${conversationId}/cloud-transcribe/revert`),
   corrections: () => get<Correction[]>('/api/corrections'),
   addCorrection: (wrong: string, fixed: string) => send<Correction>('POST', '/api/corrections', { wrong, fixed }),
   deleteCorrection: (id: number) => send('DELETE', `/api/corrections/${id}`),

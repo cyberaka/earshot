@@ -83,6 +83,11 @@ public class CloudTranscriber {
 			throw new IllegalStateException("OpenAI could not transcribe this line (HTTP " + res.statusCode() + ").");
 		}
 		String text = json.readTree(res.body()).path("text").asString("").strip();
+		if ("en+hi".equals(language) && notLatin(text)) {
+			// English + Hindi is written in Latin letters (owner, 2026-10-25); OpenAI often answers in Devanagari or Urdu script.
+			log.info("event=cloud_transcribe_not_latin model={}", model);
+			return "";
+		}
 		if (echoes(text, prompt)) {
 			// On unclear audio the model can return its prompt ("Haan bhai, theek hai…", 23 Oct day): nothing was heard.
 			log.info("event=cloud_transcribe_echo model={}", model);
@@ -90,6 +95,11 @@ public class CloudTranscriber {
 		}
 		log.info("event=cloud_transcribed model={} bytes={}", model, wav.length);
 		return text;
+	}
+
+	/** Letters outside Latin (with accents): Devanagari, Urdu and the like. */
+	static boolean notLatin(String text) {
+		return text != null && text.codePoints().anyMatch(c -> Character.isLetter(c) && c > 0x024F);
 	}
 
 	/** A reply made only of the prompt's words (two or more) is the prompt coming back, not speech. */
