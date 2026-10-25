@@ -50,6 +50,7 @@ Transcription and diarization run offline. No audio ever leaves the machine; tra
   1. Edit a line's text in place; the original is kept and the line shows "edited"; search, exports and the live transcript file use the correction.
   2. Remembered corrections: an edit that swaps a word or phrase offers "Always change X → Y"; the list (Settings, removable) is applied to new transcripts, to existing ones on request, and feeds Names and terms.
   3. A run of lines given to one speaker in one go ("from this line to that line: Thanveer"), besides today's per-line "Who said this?".
+  4. "Re-transcribe this line" on a badly transcribed line (owner, same day: "I want to fix it myself or propose a transcription again… using local model or a cloud model"). Click-only (D-10), one line at a time. Local: a different local model as a second opinion (re-running the same model on the same audio mostly returns the same text), optionally with current Names and terms and a little audio either side. Cloud: OpenAI transcription (Anthropic's API takes no audio); the button says before the click that the line's audio leaves the Mac, with its length and approximate cost. The result is shown as a proposal beside the current text (Use this / Keep current, editable first), never written over it; an accepted proposal counts as the user's correction (part 2).
 - **Settings:** office conversations, cafeteria, travel, in-person meeting rooms, and online calls on the laptop.
 
 ## 4. Constraints & Assumptions
