@@ -72,6 +72,7 @@ public class PeopleService {
 				            ORDER BY s.end_s - s.start_s DESC LIMIT 1)::text AS sample
 				FROM speaker_cluster sc JOIN conversation c ON c.id = sc.conversation_id JOIN recording r ON r.id = c.recording_id
 				WHERE sc.person_id IS NULL AND sc.speech_s >= 3 AND NOT c.is_ambient AND sc.embedding IS NOT NULL
+				  AND c.transcript_version_id IS NULL
 				ORDER BY c.local_date DESC, sc.speech_s DESC LIMIT :n""").param("n", limit).query().listOfRows();
 	}
 
@@ -188,7 +189,9 @@ public class PeopleService {
 				       COALESCE(c.capture_files ->> sc.channel, CASE WHEN c.meeting_id IS NOT NULL THEN r.path || '/' || sc.channel || '.flac' END),
 				       r.work_path, c.meeting_id
 				FROM speaker_cluster sc JOIN conversation c ON c.id = sc.conversation_id JOIN recording r ON r.id = c.recording_id
-				WHERE sc.id = :id""").param("id", clusterId)
+				WHERE sc.id = :id
+				  -- Another engine's lines in use (owner, 2026-10-26): their timings are not Earshot's, so no voice is learnt from them.
+				  AND c.transcript_version_id IS NULL""").param("id", clusterId)
 				.query((rs, i) -> new Object[] { rs.getString(1), rs.getString(2), (Long) rs.getObject(3), rs.getBoolean(4), rs.getString(5),
 						rs.getString(6), rs.getString(7), rs.getObject(8) })
 				.optional().orElse(null);

@@ -27,7 +27,7 @@ public class SpeakerNames {
 	/** Cluster id -> speaker for one conversation. Unnamed clusters are "Speaker N" by first appearance. */
 	public Map<Long, Speaker> forConversation(long conversationId) {
 		var rows = db.sql("""
-				SELECT sc.id, sc.channel, p.id AS person_id, p.name, COALESCE(p.is_me, false) AS is_me, sc.origin_cluster_id,
+				SELECT sc.id, sc.channel, sc.label, p.id AS person_id, p.name, COALESCE(p.is_me, false) AS is_me, sc.origin_cluster_id,
 				       (SELECT o.conversation_id FROM speaker_cluster o WHERE o.id = sc.origin_cluster_id) AS origin_conversation,
 				       (SELECT min(s.start_s) FROM segment s WHERE s.speaker_cluster_id = sc.id) AS first_s
 				FROM speaker_cluster sc LEFT JOIN person p ON p.id = sc.person_id
@@ -47,6 +47,9 @@ public class SpeakerNames {
 				name = "Me";
 			} else if (r.get("name") != null) {
 				name = (String) r.get("name");
+			} else if (((String) r.get("label")).startsWith(OPENAI_LABEL)) {
+				// A speaker OpenAI heard, while its transcript is in use: its own letter.
+				name = openaiName((String) r.get("label"));
 			} else if (r.get("origin_cluster_id") != null && r.get("origin_conversation") != null) {
 				// Unnamed, but heard in an earlier part of the meeting: keep that part's "Speaker N".
 				var origin = forConversation(((Number) r.get("origin_conversation")).longValue())
@@ -59,6 +62,16 @@ public class SpeakerNames {
 					(String) r.get("channel")));
 		}
 		return out;
+	}
+
+	// Kept in step with TranscriptVersions.LABEL_PREFIX.
+	private static final String OPENAI_LABEL = "openai:";
+
+	/** "openai:A" is "Speaker A"; a long conversation's pieces were heard apart: "openai:2:A" is "Speaker A (part 2)". */
+	public static String openaiName(String label) {
+		String s = label.startsWith(OPENAI_LABEL) ? label.substring(OPENAI_LABEL.length()) : label;
+		int colon = s.indexOf(':');
+		return colon < 0 ? "Speaker " + s : "Speaker " + s.substring(colon + 1) + " (part " + s.substring(0, colon) + ")";
 	}
 
 	/** Live segments carry no cluster: the channel says who spoke (PRD §6.2). */

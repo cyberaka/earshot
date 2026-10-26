@@ -39,9 +39,12 @@ public class ConversationJob implements JobWorker.Handler {
 	private final MarkdownExporter exporter;
 	private final Jobs jobs;
 	private final JsonMapper json;
+	private final com.earshot.api.conversation.TranscriptVersions versions;
 
 	public ConversationJob(JdbcClient db, MlClient ml, Settings settings, SpeakerMatcher matcher,
-			MarkdownExporter exporter, Jobs jobs, JsonMapper json, com.earshot.api.settings.Vocabulary vocabulary) {
+			MarkdownExporter exporter, Jobs jobs, JsonMapper json, com.earshot.api.settings.Vocabulary vocabulary,
+			com.earshot.api.conversation.TranscriptVersions versions) {
+		this.versions = versions;
 		this.vocabulary = vocabulary;
 		this.db = db;
 		this.ml = ml;
@@ -64,6 +67,8 @@ public class ConversationJob implements JobWorker.Handler {
 	@Override
 	public void run(Jobs.Job job, JobWorker worker) {
 		long id = job.conversationId();
+		// A re-run rewrites Earshot's own lines: OpenAI's transcript, if in use, is put away first.
+		versions.beforeEarshotRewrites(id);
 		db.sql("UPDATE conversation SET status = 'running' WHERE id = :id").param("id", id).update();
 		while (true) {
 			Conv c = load(id);

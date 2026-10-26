@@ -29,8 +29,15 @@ export interface SegmentView {
 }
 
 export interface Correction { id: number; wrong: string; fixed: string }
-export interface CloudPlan { paragraphs: number; audioS: number; usd: number; available: boolean; model: string }
-export interface CloudResult { paragraphs: number; changed: number; unchanged: number; failed: number; audioS: number }
+/** A whole conversation's transcript by OpenAI, kept beside Earshot's (2026-10-26); lines are offsets in the recording. */
+export interface TranscriptLine { startS: number; endS: number; speaker: string; text: string }
+export interface TranscriptVersion {
+  id: number | null; engine: 'earshot' | 'openai'; model: string; status: 'running' | 'done' | 'failed'; error: string | null; inUse: boolean
+  audioS: number | null; pieces: number; usd: number | null; tookS: number | null; createdAt: string | null
+  usage: { audio_tokens?: number; text_tokens?: number; output_tokens?: number } | null; lines: TranscriptLine[]
+}
+export interface TranscriptPlan { audioS: number; pieces: number; usd: number; available: boolean; model: string }
+export interface Transcripts { inUse: number | null; startS: number; plan: TranscriptPlan; versions: TranscriptVersion[] }
 export interface LineProposal { text: string; engine: string; model: string; audioS: number }
 export interface RetranscribeOptions {
   local: { model: string; note: string }
@@ -292,9 +299,9 @@ export const api = {
   revertLine: (id: number) => send('POST', `/api/lines/${id}/revert`),
   retranscribeOptions: () => get<RetranscribeOptions>('/api/lines/retranscribe'),
   retranscribeLines: (ids: number[], engine: 'local' | 'cloud') => send<LineProposal>('POST', '/api/lines/retranscribe', { ids, engine }),
-  cloudPlan: (conversationId: number) => get<CloudPlan>(`/api/conversations/${conversationId}/cloud-transcribe`),
-  cloudTranscribe: (conversationId: number) => send<CloudResult>('POST', `/api/conversations/${conversationId}/cloud-transcribe`),
-  cloudRevert: (conversationId: number) => send<{ lines: number }>('POST', `/api/conversations/${conversationId}/cloud-transcribe/revert`),
+  transcripts: (conversationId: number) => get<Transcripts>(`/api/conversations/${conversationId}/transcripts`),
+  transcribeWithOpenai: (conversationId: number) => send<{ version: number }>('POST', `/api/conversations/${conversationId}/transcripts/openai`),
+  useTranscript: (conversationId: number, version: number | null) => send('POST', `/api/conversations/${conversationId}/transcripts/use`, { version }),
   corrections: () => get<Correction[]>('/api/corrections'),
   addCorrection: (wrong: string, fixed: string) => send<Correction>('POST', '/api/corrections', { wrong, fixed }),
   deleteCorrection: (id: number) => send('DELETE', `/api/corrections/${id}`),

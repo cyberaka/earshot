@@ -48,10 +48,12 @@ public class PostMeetingJob implements JobWorker.Handler {
 	private final LiveTranscript transcript;
 	private final com.earshot.api.settings.Vocabulary vocabulary;
 	private final Path work;
+	private final com.earshot.api.conversation.TranscriptVersions versions;
 
 	public PostMeetingJob(JdbcClient db, MlClient ml, Settings settings, SpeakerMatcher matcher, PeopleService people,
 			MarkdownExporter exporter, JsonMapper json, LiveTranscript transcript, com.earshot.api.settings.Vocabulary vocabulary,
-			EarshotProperties props) {
+			EarshotProperties props, com.earshot.api.conversation.TranscriptVersions versions) {
+		this.versions = versions;
 		this.vocabulary = vocabulary;
 		this.db = db;
 		this.ml = ml;
@@ -72,6 +74,8 @@ public class PostMeetingJob implements JobWorker.Handler {
 	@Override
 	public void run(Jobs.Job job, JobWorker worker) throws Exception {
 		long meetingId = job.meetingId(), convId = job.conversationId(), recId = job.recordingId();
+		// A re-run rewrites Earshot's own lines: OpenAI's transcript, if in use, is put away first.
+		versions.beforeEarshotRewrites(convId);
 		var m = db.sql("""
 				SELECT m.audio_mode, COALESCE(c.capture_files, m.capture_files)::text, m.title, c.part
 				FROM meeting m JOIN conversation c ON c.id = :c WHERE m.id = :id""").param("id", meetingId).param("c", convId)

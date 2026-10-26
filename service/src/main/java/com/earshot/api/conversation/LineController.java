@@ -15,16 +15,21 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.earshot.api.settings.Vocabulary;
 
-/** The user's corrections (owner request R-4): edit a paragraph, hear it again, remember a correction. */
+/**
+ * The user's corrections (owner request R-4): edit a paragraph, hear it again, remember a correction;
+ * and a whole conversation's transcript from OpenAI, kept beside Earshot's for the user to choose.
+ */
 @RestController
 @RequestMapping("/api")
 public class LineController {
 
 	private final LineEdits lines;
 	private final Vocabulary vocabulary;
+	private final TranscriptVersions versions;
 
-	public LineController(LineEdits lines, Vocabulary vocabulary) {
+	public LineController(LineEdits lines, Vocabulary vocabulary, TranscriptVersions versions) {
 		this.lines = lines;
+		this.versions = versions;
 		this.vocabulary = vocabulary;
 	}
 
@@ -56,21 +61,26 @@ public class LineController {
 		return lines.options();
 	}
 
-	/** What "Transcribe with OpenAI" would send for this conversation, and its cost (no call). */
-	@GetMapping("/conversations/{id}/cloud-transcribe")
-	public LineEdits.CloudPlan cloudPlan(@PathVariable long id) {
-		return lines.cloudPlan(id);
+	/** Earshot's transcript and OpenAI's, side by side, and what a new OpenAI call would cost (no call). */
+	@GetMapping("/conversations/{id}/transcripts")
+	public TranscriptVersions.Overview transcripts(@PathVariable long id) {
+		return versions.overview(id);
 	}
 
-	/** The user clicked "Transcribe with OpenAI" on a conversation. */
-	@PostMapping("/conversations/{id}/cloud-transcribe")
-	public LineEdits.CloudResult cloudTranscribe(@PathVariable long id) throws InterruptedException {
-		return lines.transcribeConversation(id);
+	/** The user clicked "Transcribe with OpenAI" on a conversation: its whole audio, in the background. */
+	@PostMapping("/conversations/{id}/transcripts/openai")
+	public Map<String, Object> transcribeWithOpenai(@PathVariable long id) {
+		return Map.of("version", versions.transcribeWithOpenai(id));
 	}
 
-	@PostMapping("/conversations/{id}/cloud-transcribe/revert")
-	public Map<String, Object> cloudRevert(@PathVariable long id) {
-		return Map.of("lines", lines.revertCloud(id));
+	public record Use(Long version) {
+	}
+
+	/** The user picked which transcript the conversation uses; {@code version} null is Earshot's. */
+	@PostMapping("/conversations/{id}/transcripts/use")
+	public Map<String, Object> use(@PathVariable long id, @RequestBody Use req) {
+		versions.use(id, req.version());
+		return Map.of("ok", true);
 	}
 
 	@GetMapping("/corrections")

@@ -175,7 +175,11 @@ public class ConversationService {
 	}
 
 	private List<SpeakerView> speakers(long id, Map<Long, SpeakerNames.Speaker> speakers) {
-		var speechByCluster = db.sql("SELECT id, speech_s, embedding::text, person_id, manual, match_score FROM speaker_cluster WHERE conversation_id = :c")
+		// While another engine's transcript is in use, Earshot's speakers have no lines here and are not shown.
+		var speechByCluster = db.sql("""
+				SELECT id, speech_s, embedding::text, person_id, manual, match_score FROM speaker_cluster sc WHERE conversation_id = :c
+				  AND (EXISTS (SELECT 1 FROM segment s WHERE s.speaker_cluster_id = sc.id)
+				       OR (SELECT transcript_version_id FROM conversation WHERE id = :c) IS NULL)""")
 				.param("c", id).query((rs, i) -> new Object[] { rs.getLong(1), rs.getDouble(2), rs.getString(3), rs.getObject(4), rs.getBoolean(5),
 						(Double) rs.getObject(6) }).list();
 		var speakerViews = new ArrayList<SpeakerView>();

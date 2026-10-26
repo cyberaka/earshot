@@ -16,12 +16,4 @@ class CloudTranscriberTest {
 		assertThat(CloudTranscriber.echoes("Haan.", prompt)).isFalse();
 		assertThat(CloudTranscriber.echoes("anything", null)).isFalse();
 	}
-
-	@Test
-	void hinglishMustComeBackInLatinLetters() {
-		// Conversation 30: OpenAI answered in Devanagari and once in Urdu script.
-		assertThat(CloudTranscriber.notLatin("काम में कोई ये नहीं चलेगा")).isTrue();
-		assertThat(CloudTranscriber.notLatin("میں ٹھیک ہے")).isTrue();
-		assertThat(CloudTranscriber.notLatin("Data engineering totally aapka tha, café")).isFalse();
-	}
 }

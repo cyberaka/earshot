@@ -18,9 +18,9 @@ import org.springframework.stereotype.Component;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * One clicked line sent to OpenAI's transcription API (owner request R-4, 2026-10-25): a second
- * opinion on a badly heard line. Only that line's audio leaves the Mac, and only on the user's click;
- * Anthropic's API takes no audio. The key comes from the environment only (D-3).
+ * OpenAI's transcription API, on the user's click only: one badly heard line (owner request R-4,
+ * 2026-10-25), or a whole conversation kept as a version beside Earshot's (2026-10-26). Only that
+ * audio leaves the Mac; Anthropic's API takes no audio. The key comes from the environment only (D-3).
  */
 @Component
 public class CloudTranscriber {
@@ -35,6 +35,7 @@ public class CloudTranscriber {
 	private final String baseUrl;
 	private final String apiKey;
 	private final String model;
+	private final String wholeModel;
 	private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
 
 	public CloudTranscriber(JsonMapper json, Environment env) {
@@ -43,6 +44,7 @@ public class CloudTranscriber {
 		String key = env.getProperty("OPENAI_API_KEY");
 		this.apiKey = key == null || key.isBlank() ? null : key;
 		this.model = env.getProperty("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe");
+		this.wholeModel = env.getProperty("OPENAI_WHOLE_TRANSCRIBE_MODEL", "gpt-4o-transcribe-diarize");
 	}
 
 	public boolean available() {
@@ -51,6 +53,42 @@ public class CloudTranscriber {
 
 	public String model() {
 		return model;
+	}
+
+	public String wholeModel() {
+		return wholeModel;
+	}
+
+	/**
+	 * A whole conversation (or one piece of a long one) in one call (owner, 2026-10-26): no prompt and no
+	 * language, so OpenAI writes what it hears in its own script, with its own speakers and timings.
+	 * Returns the reply exactly as it came back.
+	 */
+	public String transcribeWhole(byte[] mp3) throws IOException, InterruptedException {
+		if (apiKey == null) {
+			throw new IllegalStateException("Set OPENAI_API_KEY in .env and restart Earshot to use OpenAI for this.");
+		}
+		String boundary = "earshot-" + UUID.randomUUID();
+		var body = new ByteArrayOutputStream();
+		field(body, boundary, "model", wholeModel);
+		field(body, boundary, "response_format", "diarized_json");
+		// Required by the diarizing model for audio over 30 s.
+		field(body, boundary, "chunking_strategy", "auto");
+		body.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"conversation.mp3\"\r\nContent-Type: audio/mpeg\r\n\r\n")
+				.getBytes(StandardCharsets.UTF_8));
+		body.write(mp3);
+		body.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+		// About 4 minutes for 14 minutes of audio (conversation 30, 2026-10-26).
+		var req = HttpRequest.newBuilder(URI.create(baseUrl + "/audio/transcriptions")).timeout(Duration.ofMinutes(15))
+				.header("Authorization", "Bearer " + apiKey).header("Content-Type", "multipart/form-data; boundary=" + boundary)
+				.POST(HttpRequest.BodyPublishers.ofByteArray(body.toByteArray())).build();
+		var res = http.send(req, HttpResponse.BodyHandlers.ofString());
+		if (res.statusCode() != 200) {
+			log.warn("event=cloud_transcribe_whole_failed status={} model={}", res.statusCode(), wholeModel);
+			throw new IllegalStateException("OpenAI could not transcribe this conversation (HTTP " + res.statusCode() + ").");
+		}
+		log.info("event=cloud_transcribed_whole model={} bytes={}", wholeModel, mp3.length);
+		return res.body();
 	}
 
 	/** {@code wav}: the line's audio. {@code language}: Earshot's setting (en, hi, en+hi, auto). */
@@ -82,12 +120,8 @@ public class CloudTranscriber {
 			log.warn("event=cloud_transcribe_failed status={} model={}", res.statusCode(), model);
 			throw new IllegalStateException("OpenAI could not transcribe this line (HTTP " + res.statusCode() + ").");
 		}
+		// OpenAI's reply is kept in whatever script it comes back in (owner, 2026-10-26: "let's not fight it").
 		String text = json.readTree(res.body()).path("text").asString("").strip();
-		if ("en+hi".equals(language) && notLatin(text)) {
-			// English + Hindi is written in Latin letters (owner, 2026-10-25); OpenAI often answers in Devanagari or Urdu script.
-			log.info("event=cloud_transcribe_not_latin model={}", model);
-			return "";
-		}
 		if (echoes(text, prompt)) {
 			// On unclear audio the model can return its prompt ("Haan bhai, theek hai…", 23 Oct day): nothing was heard.
 			log.info("event=cloud_transcribe_echo model={}", model);
@@ -95,11 +129,6 @@ public class CloudTranscriber {
 		}
 		log.info("event=cloud_transcribed model={} bytes={}", model, wav.length);
 		return text;
-	}
-
-	/** Letters outside Latin (with accents): Devanagari, Urdu and the like. */
-	static boolean notLatin(String text) {
-		return text != null && text.codePoints().anyMatch(c -> Character.isLetter(c) && c > 0x024F);
 	}
 
 	/** A reply made only of the prompt's words (two or more) is the prompt coming back, not speech. */

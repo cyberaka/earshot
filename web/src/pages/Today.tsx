@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { api, groupTurns, nearest, swapIn, turnBands, fmtDuration, fmtElapsed, speakerColor, todayLocal, type CloudPlan, type CloudResult, type ConversationDetail, type LineProposal, type RetranscribeOptions, type DayView, type Provider, type NoteView, type Person, type SpeakerView } from '../api'
+import { api, groupTurns, nearest, swapIn, turnBands, fmtDuration, fmtElapsed, speakerColor, todayLocal, type ConversationDetail, type LineProposal, type RetranscribeOptions, type DayView, type Provider, type NoteView, type Person, type SpeakerView } from '../api'
 import AskBox from '../components/AskBox'
 import SummarizeButton from '../components/Summarize'
 import { useHealth } from '../components/Shell'
 import { ScreenshotLine } from '../components/Screenshots'
 import TimeToggle, { useTimeMode } from '../components/TimeToggle'
 import NotesSection, { NoteEditor, NoteItem } from '../components/Notes'
+import TranscriptCompare from '../components/TranscriptCompare'
 import ui from '../components/ui.module.css'
 import s from './Today.module.css'
 
@@ -264,8 +265,7 @@ function Conversation({ id, onChanged, seek, onSeekDone, summaryWith, liveNow }:
               : <button className={ui.btnSmall} title="Tick lines, shift-click for a run: give them to one speaker, or save them as your voice"
                 onClick={() => setMarkMe(new Set())}>Select lines</button>)}
           </div>
-          <CloudTranscribe conversationId={d.id} hasAudio={d.hasAudio} byOpenai={d.segments.some(x => x.editedBy?.startsWith('openai:') ?? false)}
-            onChanged={() => { load(); onChanged() }} />
+          <TranscriptCompare conversationId={d.id} hasAudio={d.hasAudio} play={play} onChanged={() => { load(); onChanged() }} />
           {offer && (
             <div className={ui.notice}>
               {offer.id === undefined
@@ -376,51 +376,6 @@ export function ConfirmButton({ label, confirm, onConfirm }: { label: string; co
   return armed
     ? <span className={s.markBar}><button className={ui.danger} onClick={onConfirm}>{confirm}</button><button className={ui.btnSmall} onClick={() => setArmed(false)}>Keep</button></span>
     : <button className={ui.danger} onClick={() => setArmed(true)}>{label}</button>
-}
-
-/**
- * The whole conversation through OpenAI (owner request, 2026-10-25), on a click: what leaves the Mac
- * and the cost are shown first. Each speaker's paragraph is sent on its own; Earshot's text is kept.
- */
-function CloudTranscribe({ conversationId, hasAudio, byOpenai, onChanged }: {
-  conversationId: number; hasAudio: boolean; byOpenai: boolean; onChanged: () => void
-}) {
-  const [plan, setPlan] = useState<CloudPlan | null>(null)
-  const [busy, setBusy] = useState<'send' | 'revert' | null>(null)
-  const [result, setResult] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const ask = () => { setError(null); setResult(null); api.cloudPlan(conversationId).then(setPlan).catch(e => setError(String(e))) }
-  async function send() {
-    setBusy('send'); setError(null)
-    try {
-      const r: CloudResult = await api.cloudTranscribe(conversationId)
-      setResult(`OpenAI rewrote ${r.changed} of ${r.paragraphs} paragraphs` + (r.unchanged ? `; ${r.unchanged} kept Earshot's text (nothing different heard)` : '')
-        + (r.failed ? `; ${r.failed} failed and kept Earshot's text` : '') + '.')
-      setPlan(null); onChanged()
-    } catch (e) { setError(String(e)) }
-    setBusy(null)
-  }
-  async function revert() {
-    setBusy('revert'); setError(null)
-    try { const r = await api.cloudRevert(conversationId); setResult(`Put back Earshot's text on ${r.lines} line${r.lines === 1 ? '' : 's'}.`); onChanged() } catch (e) { setError(String(e)) }
-    setBusy(null)
-  }
-  return (
-    <div className={s.cloudBar}>
-      {!plan && <button className={ui.btnSmall} disabled={!hasAudio || busy !== null} onClick={ask}>Transcribe with OpenAI…</button>}
-      {byOpenai && !plan && <button className={ui.btnSmall} disabled={busy !== null} onClick={revert}>{busy === 'revert' ? 'Putting back…' : "Put back Earshot's transcription"}</button>}
-      {plan && (plan.available
-        ? <span className={s.markBar}>
-          Sends {plan.paragraphs} paragraphs ({Math.round(plan.audioS / 60)} min of speech) to OpenAI {plan.model}, about ${plan.usd.toFixed(2)}.
-          Speakers stay as found on this Mac; Earshot's text is kept and can be put back.
-          <button className={ui.primary} disabled={busy !== null} onClick={send}>{busy === 'send' ? 'Transcribing with OpenAI…' : 'Send to OpenAI'}</button>
-          <button className={ui.btnSmall} disabled={busy !== null} onClick={() => setPlan(null)}>Cancel</button>
-        </span>
-        : <span className={ui.muted}>Set OPENAI_API_KEY in .env and restart Earshot to use OpenAI. <button className={ui.btnSmall} onClick={() => setPlan(null)}>OK</button></span>)}
-      {result && <span className={ui.muted}>{result}</span>}
-      {error && <div className={ui.error}>{error}</div>}
-    </div>
-  )
 }
 
 /**
