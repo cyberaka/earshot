@@ -5,6 +5,8 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -137,8 +139,7 @@ public class ConversationService {
 		for (Conv c : convs) {
 			var speakers = names.forConversation(c.id());
 			var tags = new LinkedHashSet<Tag>();
-			speakers.values().stream().sorted((a, b) -> Boolean.compare(b.isMe(), a.isMe()))
-					.forEach(s -> tags.add(new Tag(s.name(), key(s))));
+			cardSpeakers(speakers, firstSpoken(c.id())).forEach(s -> tags.add(new Tag(s.name(), key(s))));
 			if (speakers.isEmpty() && c.meetingId() != null) {
 				// No speaker separation (recorded before it existed): say what the channels can tell.
 				if ("mic".equals(c.audioMode())) {
@@ -157,6 +158,32 @@ public class ConversationService {
 					c.stage(), c.status(), c.recStart().plusMillis((long) (c.startOff() * 1000))));
 		}
 		return new DayView(date, rows, ambient, meetings, false);
+	}
+
+	/**
+	 * When each speaker first spoke, for the speakers shown: as on the conversation page, Earshot's speakers
+	 * are hidden while another engine's transcript is in use. Not yet heard: no entry's value (null).
+	 */
+	private Map<Long, Double> firstSpoken(long id) {
+		var out = new HashMap<Long, Double>();
+		db.sql("""
+				SELECT sc.id, (SELECT min(s.start_s) FROM segment s WHERE s.speaker_cluster_id = sc.id) FROM speaker_cluster sc
+				WHERE sc.conversation_id = :c
+				  AND (EXISTS (SELECT 1 FROM segment s WHERE s.speaker_cluster_id = sc.id)
+				       OR (SELECT transcript_version_id FROM conversation WHERE id = :c) IS NULL)""")
+				.param("c", id).query(rs -> {
+					out.put(rs.getLong(1), (Double) rs.getObject(2));
+				});
+		return out;
+	}
+
+	/** A day card's speakers: only those shown for the conversation, "Me" first, then by who spoke first. */
+	static List<SpeakerNames.Speaker> cardSpeakers(Map<Long, SpeakerNames.Speaker> speakers, Map<Long, Double> firstSpoken) {
+		return speakers.values().stream().filter(s -> firstSpoken.containsKey(s.clusterId()))
+				.sorted(Comparator.comparing((SpeakerNames.Speaker s) -> !s.isMe())
+						.thenComparing(s -> firstSpoken.get(s.clusterId()), Comparator.nullsLast(Comparator.naturalOrder()))
+						.thenComparing(SpeakerNames.Speaker::clusterId))
+				.toList();
 	}
 
 	private String displayTitle(Conv c, Map<Long, SpeakerNames.Speaker> speakers) {
