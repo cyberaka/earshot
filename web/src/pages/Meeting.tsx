@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import SummarizeButton from '../components/Summarize'
 import { api, LANGUAGES, callReady, channelLabels, deviceRoles, groupTurns, turnBands, fmtElapsed, nearest, speakerColor, type AttachmentView, type Citation, type Devices, type MeetingSummary, type MeetingView, type NoteView, type Person, type SegmentView, type SpeakerView } from '../api'
 import { Answer, useAsk } from '../components/AskBox'
-import { NoteEditor, NoteItem } from '../components/Notes'
+import { NotesButton, NotesDrawer } from '../components/Notes'
 import SpeakerBar from '../components/SpeakerBar'
 import { NameSpeaker } from './Today'
 import TimeToggle, { useTimeMode } from '../components/TimeToggle'
@@ -665,8 +665,8 @@ function LiveMeeting({ id }: { id: number }) {
                 title={autoScroll ? 'Keeps the newest line in view. Turn off to scroll back freely.' : 'Turn on to follow the newest line.'}>
                 Auto-scroll {autoScroll ? 'on' : 'off'}</button>}
               <TimeToggle mode={timeMode} onChange={setTimeMode} />
-              <button type="button" className={notesOpen ? s.notesOn : s.notesBtn} aria-expanded={notesOpen} onClick={() => notesOpen ? setNotesOpen(false) : openNotes()}
-                title={m.live ? 'Note this moment' : 'Your notes'}>Notes{notes.length > 0 && <span className={s.notesCount}> · {notes.length}</span>}</button>
+              <NotesButton count={notes.length} open={notesOpen} onClick={() => notesOpen ? setNotesOpen(false) : openNotes()}
+                title={m.live ? 'Note this moment' : 'Your notes'} />
             </span>
           </div>
           {speakers.length > 0 && (
@@ -803,24 +803,15 @@ function LiveMeeting({ id }: { id: number }) {
       </div>
 
       {notesOpen && (
-        // Notes slide out over the page (owner, 2026-10-26: the notes column was "taking valuable screen space").
-        <aside className={s.notesDrawer} aria-label="Your notes" onKeyDown={e => { if (e.key === 'Escape') setNotesOpen(false) }}>
-          <div className={s.panelHead}>
-            <h2 className={s.h2}>Your notes</h2>
-            <button type="button" className={ui.btnSmall} onClick={() => setNotesOpen(false)}>Close</button>
-          </div>
-          {m.live && noteAt !== null && <span className={ui.muted}>Pinned to {segments.find(x => x.startS === noteAt)?.clock ?? 'now'}, when you opened this.</span>}
-          <NoteEditor key={noteAt ?? 'none'} autoFocus placeholder={m.live ? 'Note this moment…' : 'Add a note…'} onSave={async t => {
+        <NotesDrawer notes={notes} placeholder={m.live ? 'Note this moment…' : 'Add a note…'} onClose={() => setNotesOpen(false)}
+          hint={m.live && noteAt !== null ? `Pinned to ${segments.find(x => x.startS === noteAt)?.clock ?? 'now'}, when you opened this.` : undefined}
+          onChanged={() => reload().catch(() => {})} onJump={at => onCite({ startS: at })}
+          onSave={async t => {
             // While live, a note is pinned to the line showing when the user opened notes: the moment they reacted to.
             await api.addNote(m.conversation_id, t, m.live ? noteAt : null)
             const conv = await api.conversation(m.conversation_id)
             setNotes(conv.notes)
-            setNotesOpen(false)
           }} />
-          <div className={s.notesList}>
-            {notes.map(n => <NoteItem key={n.id} note={n} onChanged={() => reload().catch(() => {})} onJump={at => onCite({ startS: at })} />)}
-          </div>
-        </aside>
       )}
     </div>
   )

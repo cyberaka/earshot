@@ -56,3 +56,21 @@
 }
 .preview { min-height: 64px; padding: 8px 10px; border: 1px dashed var(--border-strong); border-radius: 8px; font-size: 14px; }
 .editorRow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* The notes button and drawer (meeting and conversation pages). */
+.notesBtn, .notesOn { border-radius: 999px; padding: 4px 10px; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.notesBtn { border: 1px solid var(--border); background: var(--surface); color: var(--ink-2); }
+.notesOn { border: 1px solid var(--accent, #2b5fd9); background: var(--accent-soft, #e8efff); color: var(--accent, #2b5fd9); }
+.notesCount { font-weight: 500; }
+.drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 20;
+  width: min(420px, 100vw - 32px);
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 18px 20px;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
+  overflow-y: auto;
+}
+.drawerHead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.drawerTitle { font-size: 16px; }

@@ -165,3 +165,35 @@ export default function NotesSection({ conversationId, notes, onChanged, onJump 
     </section>
   )
 }
+
+/** The header button that opens the notes drawer, with how many notes there are. */
+export function NotesButton({ count, open, onClick, title }: { count: number; open: boolean; onClick: () => void; title?: string }) {
+  return (
+    <button type="button" className={open ? s.notesOn : s.notesBtn} aria-expanded={open} onClick={onClick} title={title}>
+      Notes{count > 0 && <span className={s.notesCount}> · {count}</span>}
+    </button>
+  )
+}
+
+/**
+ * Notes as a drawer over the right of the page (owner, 2026-10-26: notes were "taking valuable screen
+ * space"; "it should be discreet button"). Escape, Close or saving a note shuts it.
+ */
+export function NotesDrawer({ notes, placeholder, hint, onSave, onClose, onChanged, onJump }: {
+  notes: NoteView[]; placeholder: string; hint?: string; onSave: (text: string) => Promise<unknown>; onClose: () => void
+  onChanged: () => void; onJump?: (anchorS: number) => void
+}) {
+  return (
+    <aside className={s.drawer} aria-label="Your notes" onKeyDown={e => { if (e.key === 'Escape') onClose() }}>
+      <div className={s.drawerHead}>
+        <h2 className={s.drawerTitle}>Your notes</h2>
+        <button type="button" className={ui.btnSmall} onClick={onClose}>Close</button>
+      </div>
+      {hint && <span className={ui.muted}>{hint}</span>}
+      <NoteEditor autoFocus placeholder={placeholder} onSave={t => onSave(t).then(onClose)} />
+      <div className={s.section}>
+        {notes.map(n => <NoteItem key={n.id} note={n} onChanged={onChanged} onJump={onJump} />)}
+      </div>
+    </aside>
+  )
+}

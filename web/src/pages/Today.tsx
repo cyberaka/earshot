@@ -6,7 +6,7 @@ import SummarizeButton from '../components/Summarize'
 import { useHealth } from '../components/Shell'
 import { ScreenshotLine } from '../components/Screenshots'
 import TimeToggle, { useTimeMode } from '../components/TimeToggle'
-import NotesSection, { NoteEditor, NoteItem } from '../components/Notes'
+import NotesSection, { NoteEditor, NoteItem, NotesButton, NotesDrawer } from '../components/Notes'
 import TranscriptCompare from '../components/TranscriptCompare'
 import SpeakerBar from '../components/SpeakerBar'
 import ui from '../components/ui.module.css'
@@ -126,6 +126,7 @@ function Conversation({ id, onChanged, seek, onSeekDone, summaryWith, liveNow }:
   const [namingLine, setNamingLine] = useState<{ id: number; ids: number[]; text: string } | null>(null)
   // Lines picked with the checkboxes ("Select lines"): to save as the user's voice, or to give to one speaker.
   const [markMe, setMarkMe] = useState<Set<number> | null>(null)
+  const [notesOpen, setNotesOpen] = useState(false)
   const [lastPick, setLastPick] = useState<number | null>(null)
   // A paragraph being corrected (R-4), by the id of its first line.
   const [fixing, setFixing] = useState<{ id: number; mode: 'edit' | 'redo' } | null>(null)
@@ -236,13 +237,17 @@ function Conversation({ id, onChanged, seek, onSeekDone, summaryWith, liveNow }:
         </div>
       )}
 
-      <NotesSection conversationId={d.id} notes={d.notes} onChanged={load} onJump={jump} />
+      {/* With a transcript, notes open from its header (owner, 2026-10-26); without one there is nowhere else for them. */}
+      {d.segments.length === 0 && <NotesSection conversationId={d.id} notes={d.notes} onChanged={load} onJump={jump} />}
+      {notesOpen && <NotesDrawer notes={d.notes} placeholder="Add a note to this conversation…" onClose={() => setNotesOpen(false)}
+        onChanged={load} onJump={jump} onSave={t => api.addNote(d.id, t, null).then(load)} />}
 
       {d.segments.length > 0 && (
         <section>
           <div className={s.transcriptHead}>
             <h3 className={ui.sectionLabel}>Transcript</h3>
             <TimeToggle mode={timeMode} onChange={setTimeMode} />
+            <NotesButton count={d.notes.length} open={notesOpen} onClick={() => setNotesOpen(!notesOpen)} />
             {(markMe
               ? <span className={s.markBar}>{markMe.size} selected
                 <button className={ui.btnSmall} disabled={markMe.size === 0} onClick={() => {
