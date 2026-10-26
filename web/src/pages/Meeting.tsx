@@ -4,6 +4,7 @@ import SummarizeButton from '../components/Summarize'
 import { api, LANGUAGES, callReady, channelLabels, deviceRoles, groupTurns, turnBands, fmtElapsed, nearest, speakerColor, type AttachmentView, type Citation, type Devices, type MeetingSummary, type MeetingView, type NoteView, type Person, type SegmentView, type SpeakerView } from '../api'
 import { Answer, useAsk } from '../components/AskBox'
 import { NoteEditor, NoteItem } from '../components/Notes'
+import SpeakerBar from '../components/SpeakerBar'
 import { NameSpeaker } from './Today'
 import TimeToggle, { useTimeMode } from '../components/TimeToggle'
 import { useHealth } from '../components/Shell'
@@ -471,6 +472,9 @@ function LiveMeeting({ id }: { id: number }) {
   const rows = useRef<Map<number, HTMLDivElement>>(new Map())
   // Auto-scroll (owner, 2026-10-24): on by default; only the toggle (or jumping to a citation) turns it off.
   const [autoScroll, setAutoScroll] = useState(true)
+  // Notes open as a drawer; while live, a note is pinned to the line showing when it was opened.
+  const [notesOpen, setNotesOpen] = useState(false)
+  const [noteAt, setNoteAt] = useState<number | null>(null)
   const { items, setItems, busy, run } = useAsk('meeting', String(id))
   const health = useHealth(30_000)
   const askWith = health?.insights?.features.ask ?? 'off'
@@ -478,6 +482,7 @@ function LiveMeeting({ id }: { id: number }) {
   // During a meeting the "during" provider (cloud only); afterwards the "after" one, which may be local.
   const duringWith = features?.live_summary ?? 'off'
   const afterWith = features?.meeting_summary ?? 'off'
+  const hasSide = !!summary || duringWith !== 'off' || afterWith !== 'off' || askWith !== 'off'
   const estimateSummary = useCallback(() => api.meetingSummaryEstimate(id), [id])
 
   const reload = useCallback(async () => {
@@ -585,6 +590,7 @@ function LiveMeeting({ id }: { id: number }) {
   }
 
   if (!m) return <span className={ui.muted}>{error ?? 'Loading…'}</span>
+  const openNotes = () => { setNoteAt(m.live && segments.length ? segments[segments.length - 1].startS : null); setNotesOpen(true) }
   const speakerById = new Map(speakers.map(sp => [sp.clusterId, sp]))
   const elapsed = status?.elapsedS ?? (m.ended_at ? (new Date(m.ended_at).getTime() - new Date(m.started_at).getTime()) / 1000 : 0)
   const modeLabel = m.audio_mode === 'mic_system' ? 'Mic + System' : m.audio_mode === 'mic' ? 'Mic only' : 'System only'
@@ -659,20 +665,14 @@ function LiveMeeting({ id }: { id: number }) {
                 title={autoScroll ? 'Keeps the newest line in view. Turn off to scroll back freely.' : 'Turn on to follow the newest line.'}>
                 Auto-scroll {autoScroll ? 'on' : 'off'}</button>}
               <TimeToggle mode={timeMode} onChange={setTimeMode} />
+              <button type="button" className={notesOpen ? s.notesOn : s.notesBtn} aria-expanded={notesOpen} onClick={() => notesOpen ? setNotesOpen(false) : openNotes()}
+                title={m.live ? 'Note this moment' : 'Your notes'}>Notes{notes.length > 0 && <span className={s.notesCount}> · {notes.length}</span>}</button>
             </span>
           </div>
           {speakers.length > 0 && (
             <div className={s.speakerBar}>
-              <span className={ui.muted}>Speakers</span>
-              {[...speakers].sort((a, b) => b.speechS - a.speechS).map(sp => {
-                const col = speakerColor(sp.key)
-                const unnamed = sp.personId === null && !sp.isMe
-                return unnamed
-                  ? <button key={sp.clusterId} className={s.nameBtn} onClick={() => { setNaming(sp); setNamingLine(null) }}>{sp.name} · Name</button>
-                  : <button key={sp.clusterId} className={ui.chip} style={{ background: col.bg, color: col.fg, border: 0, cursor: 'pointer' }}
-                    onClick={() => { setNaming(sp); setNamingLine(null) }} title={sp.recognised ? 'Recognised by voice: click to confirm or correct' : 'Rename or reassign'}>{sp.name}{sp.recognised && <span className={ui.byVoice}> · by voice</span>}</button>
-              })}
-              {m.live && <span className={ui.muted}>Labels settle as people talk; click to name.</span>}
+              <SpeakerBar speakers={speakers} onPick={sp => { setNaming(sp); setNamingLine(null) }}
+                hint={m.live ? 'Labels settle as people talk; click to name.' : undefined} />
             </div>
           )}
           {naming && !namingLine && (
@@ -733,7 +733,7 @@ function LiveMeeting({ id }: { id: number }) {
           )}
         </section>
 
-        <aside className={s.side} aria-label="Meeting notes and optional insights">
+        {hasSide && <aside className={s.side} aria-label="Optional insights">
           {(summary || duringWith !== 'off' || afterWith !== 'off') && <section className={ui.card}>
             <div className={s.panelHead}>
               <h2 className={s.h2}>Summary</h2>
@@ -775,17 +775,6 @@ function LiveMeeting({ id }: { id: number }) {
             )}
           </section>}
 
-          <section className={ui.card}>
-            <h2 className={s.h2}>Your notes</h2>
-            {notes.map(n => <NoteItem key={n.id} note={n} onChanged={() => reload().catch(() => {})} onJump={at => onCite({ startS: at })} />)}
-            <NoteEditor placeholder={m.live ? 'Note this moment…' : 'Add a note…'} onSave={async t => {
-              // While live, a note is pinned to the latest line, the moment the user is reacting to.
-              const anchor = m.live && segments.length ? segments[segments.length - 1].startS : null
-              await api.addNote(m.conversation_id, t, anchor)
-              const conv = await api.conversation(m.conversation_id)
-              setNotes(conv.notes)
-            }} />
-          </section>
 
           {askWith !== 'off' && <section className={ui.card}>
             <h2 className={s.h2}>Ask</h2>
@@ -810,8 +799,29 @@ function LiveMeeting({ id }: { id: number }) {
               <button className={ui.primary} disabled={busy || !q.trim()}>Ask</button>
             </form>
           </section>}
-        </aside>
+        </aside>}
       </div>
+
+      {notesOpen && (
+        // Notes slide out over the page (owner, 2026-10-26: the notes column was "taking valuable screen space").
+        <aside className={s.notesDrawer} aria-label="Your notes" onKeyDown={e => { if (e.key === 'Escape') setNotesOpen(false) }}>
+          <div className={s.panelHead}>
+            <h2 className={s.h2}>Your notes</h2>
+            <button type="button" className={ui.btnSmall} onClick={() => setNotesOpen(false)}>Close</button>
+          </div>
+          {m.live && noteAt !== null && <span className={ui.muted}>Pinned to {segments.find(x => x.startS === noteAt)?.clock ?? 'now'}, when you opened this.</span>}
+          <NoteEditor key={noteAt ?? 'none'} autoFocus placeholder={m.live ? 'Note this moment…' : 'Add a note…'} onSave={async t => {
+            // While live, a note is pinned to the line showing when the user opened notes: the moment they reacted to.
+            await api.addNote(m.conversation_id, t, m.live ? noteAt : null)
+            const conv = await api.conversation(m.conversation_id)
+            setNotes(conv.notes)
+            setNotesOpen(false)
+          }} />
+          <div className={s.notesList}>
+            {notes.map(n => <NoteItem key={n.id} note={n} onChanged={() => reload().catch(() => {})} onJump={at => onCite({ startS: at })} />)}
+          </div>
+        </aside>
+      )}
     </div>
   )
 }

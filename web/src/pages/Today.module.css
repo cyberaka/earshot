@@ -42,17 +42,6 @@
 .detailTitle { font-size: 22px; }
 .meta { font-family: var(--mono); font-size: 13px; color: var(--muted); }
 
-.speakers { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.nameBtn {
-  min-height: 32px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px dashed var(--muted);
-  background: var(--surface);
-  color: var(--ink-2);
-  font-size: 13px;
-  cursor: pointer;
-}
 .namePanel { border: 1px solid var(--border); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 10px; background: var(--surface-2); }
 .namePanelHead { display: flex; gap: 12px; align-items: baseline; }
 .nameRow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }

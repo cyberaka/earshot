@@ -1,0 +1,28 @@
+.bar { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+/* Every voice group: at most two rows of chips, the rest scrolls. */
+.allList { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; flex: 1; min-width: 0; max-height: 80px; overflow-y: auto; padding: 2px 0; }
+.nameBtn {
+  min-height: 32px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px dashed var(--muted);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 13px;
+  cursor: pointer;
+}
+.toggle {
+  flex: none;
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--border-soft);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.toggle:hover { color: var(--ink); }

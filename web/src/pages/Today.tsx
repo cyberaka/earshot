@@ -8,6 +8,7 @@ import { ScreenshotLine } from '../components/Screenshots'
 import TimeToggle, { useTimeMode } from '../components/TimeToggle'
 import NotesSection, { NoteEditor, NoteItem } from '../components/Notes'
 import TranscriptCompare from '../components/TranscriptCompare'
+import SpeakerBar from '../components/SpeakerBar'
 import ui from '../components/ui.module.css'
 import s from './Today.module.css'
 
@@ -198,17 +199,7 @@ function Conversation({ id, onChanged, seek, onSeekDone, summaryWith, liveNow }:
       {d.status !== 'done' && <div className={ui.notice}>{d.status === 'live' ? 'This meeting is live.' : `Processing (${d.stage})…`}</div>}
 
       {d.speakers.length > 0 && (
-        <div className={s.speakers}>
-          <span className={ui.muted}>Speakers</span>
-          {d.speakers.map(sp => {
-            const col = speakerColor(sp.key)
-            const unnamed = sp.personId === null && !sp.isMe
-            return unnamed
-              ? <button key={sp.clusterId} className={s.nameBtn} onClick={() => { setNaming(sp); setNamingLine(null) }}>{sp.name} · Name this speaker</button>
-              : <button key={sp.clusterId} className={ui.chip} style={{ background: col.bg, color: col.fg, border: 0, cursor: 'pointer' }}
-                onClick={() => { setNaming(sp); setNamingLine(null) }} title={sp.recognised ? 'Recognised by voice: click to confirm or correct' : 'Rename or reassign'}>{sp.name}{sp.recognised && <span className={ui.byVoice}> · by voice</span>}</button>
-          })}
-        </div>
+        <SpeakerBar speakers={d.speakers} unnamedLabel="Name this speaker" onPick={sp => { setNaming(sp); setNamingLine(null) }} />
       )}
       {naming && !namingLine && <NameSpeaker speaker={naming} people={people} onClose={() => setNaming(null)} onSaved={() => { setNaming(null); load(); onChanged() }} />}
 

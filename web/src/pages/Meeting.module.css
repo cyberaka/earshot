@@ -104,17 +104,7 @@
   .liveChips { margin-left: 0; }
 }
 
-.speakerBar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 20px; border-bottom: 1px solid var(--border-soft); }
-.nameBtn {
-  min-height: 32px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px dashed var(--muted);
-  background: var(--surface);
-  color: var(--ink-2);
-  font-size: 13px;
-  cursor: pointer;
-}
+.speakerBar { padding: 10px 20px; border-bottom: 1px solid var(--border-soft); }
 .namingWrap { padding: 10px 20px; border-bottom: 1px solid var(--border-soft); }
 .whoBtn {
   composes: who;
@@ -159,3 +149,20 @@
 .autoOn, .autoOff { border-radius: 999px; padding: 4px 10px; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
 .autoOn { border: 1px solid var(--accent, #2b5fd9); background: var(--accent-soft, #e8efff); color: var(--accent, #2b5fd9); }
 .autoOff { border: 1px solid var(--border); background: var(--surface); color: var(--ink-2); }
+
+/* Notes: a button in the transcript header and a drawer over the right of the page. */
+.notesBtn, .notesOn { border-radius: 999px; padding: 4px 10px; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.notesBtn { border: 1px solid var(--border); background: var(--surface); color: var(--ink-2); }
+.notesOn { border: 1px solid var(--accent, #2b5fd9); background: var(--accent-soft, #e8efff); color: var(--accent, #2b5fd9); }
+.notesCount { font-weight: 500; }
+.notesDrawer {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 20;
+  width: min(420px, 100vw - 32px);
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 18px 20px;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
+  overflow-y: auto;
+}
+.notesList { display: flex; flex-direction: column; gap: 8px; }
