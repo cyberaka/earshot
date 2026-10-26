@@ -10,6 +10,8 @@ import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
+import java.util.function.ToLongFunction;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
@@ -180,10 +182,14 @@ public class ConversationService {
 	/** A day card's speakers: only those shown for the conversation, "Me" first, then by who spoke first. */
 	static List<SpeakerNames.Speaker> cardSpeakers(Map<Long, SpeakerNames.Speaker> speakers, Map<Long, Double> firstSpoken) {
 		return speakers.values().stream().filter(s -> firstSpoken.containsKey(s.clusterId()))
-				.sorted(Comparator.comparing((SpeakerNames.Speaker s) -> !s.isMe())
-						.thenComparing(s -> firstSpoken.get(s.clusterId()), Comparator.nullsLast(Comparator.naturalOrder()))
-						.thenComparing(SpeakerNames.Speaker::clusterId))
-				.toList();
+				.sorted(speakerOrder(SpeakerNames.Speaker::isMe, SpeakerNames.Speaker::clusterId, firstSpoken)).toList();
+	}
+
+	/** "Me" first, then by who spoke first; not yet heard last. Day cards and the conversation page list speakers alike. */
+	static <T> Comparator<T> speakerOrder(Predicate<T> isMe, ToLongFunction<T> clusterId, Map<Long, Double> firstSpoken) {
+		return Comparator.comparing((T s) -> !isMe.test(s))
+				.thenComparing(s -> firstSpoken.get(clusterId.applyAsLong(s)), Comparator.nullsLast(Comparator.<Double>naturalOrder()))
+				.thenComparingLong(clusterId);
 	}
 
 	private String displayTitle(Conv c, Map<Long, SpeakerNames.Speaker> speakers) {
@@ -230,7 +236,9 @@ public class ConversationService {
 			speakerViews.add(new SpeakerView(s.clusterId(), s.name(), s.personId(), s.isMe(), key(s), s.channel(), (double) row[1],
 					suggestion, suggestionId, recognised, recognised ? (Double) row[5] : null));
 		}
-		speakerViews.sort((a, b) -> a.isMe() != b.isMe() ? (a.isMe() ? -1 : 1) : a.name().compareTo(b.name()));
+		// The same order as the day card (owner, 2026-10-26).
+		var first = firstSpoken(id);
+		speakerViews.sort(speakerOrder(SpeakerView::isMe, SpeakerView::clusterId, first));
 		return speakerViews;
 	}
 
