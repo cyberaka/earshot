@@ -39,3 +39,9 @@
 .personName { display: inline-flex; align-items: center; gap: 10px; font-weight: 600; }
 .initial { width: 30px; height: 30px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; }
 .rowActions { white-space: nowrap; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.linkBtn { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; text-align: left; }
+.samplesCell { background: var(--surface-2); }
+.samples { display: flex; flex-direction: column; gap: 8px; }
+.sample { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sampleText { flex: 1 1 200px; min-width: 0; display: flex; flex-direction: column; }
+.playSmall { composes: play; width: 32px; height: 32px; }

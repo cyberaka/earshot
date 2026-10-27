@@ -41,6 +41,6 @@ class ConversationServiceTest {
 	}
 
 	private static SpeakerView view(long id, String name, boolean me) {
-		return new SpeakerView(id, name, null, me, "u" + id, null, 0, null, null, false, null);
+		return new SpeakerView(id, name, null, me, "u" + id, null, 0, null, null, false, null, List.of(), false);
 	}
 }

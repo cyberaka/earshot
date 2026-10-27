@@ -32,7 +32,9 @@ export default function SpeakerBar({ speakers, onPick, unnamedLabel = 'Name', hi
   const chip = (sp: SpeakerView, groups = 1) => {
     const col = speakerColor(sp.key)
     return sp.personId === null && !sp.isMe
-      ? <button key={sp.clusterId} className={s.nameBtn} onClick={() => onPick(sp)}>{sp.name} · {unnamedLabel}</button>
+      ? <button key={sp.clusterId} className={s.nameBtn} onClick={() => onPick(sp)}
+        title={sp.nearTie ? 'Two remembered voices are too close to tell apart: click to choose' : undefined}>
+        {sp.name} · {sp.nearTie && sp.suggestion ? `${sp.suggestion}?` : unnamedLabel}</button>
       : <button key={sp.clusterId} className={ui.chip} style={{ background: col.bg, color: col.fg, border: 0, cursor: 'pointer' }}
         onClick={() => onPick(sp)}
         title={groups > 1 ? `Heard as ${groups} voice groups: "Each voice group" lists them to correct one` : sp.recognised ? 'Recognised by voice: click to confirm or correct' : 'Rename or reassign'}>

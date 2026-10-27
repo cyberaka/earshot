@@ -53,7 +53,12 @@ public class ConversationService {
 	}
 
 	public record SpeakerView(long clusterId, String name, Long personId, boolean isMe, String key, String channel,
-			double speechS, String suggestion, Long suggestionPersonId, boolean recognised, Double matchScore) {
+			double speechS, String suggestion, Long suggestionPersonId, boolean recognised, Double matchScore,
+			List<Candidate> candidates, boolean nearTie) {
+	}
+
+	/** One of the closest remembered voices to a speaker, offered when naming them. */
+	public record Candidate(long personId, String name, boolean isMe, double score) {
 	}
 
 	public record ActionItem(long id, String text, String owner, boolean done) {
@@ -215,26 +220,33 @@ public class ConversationService {
 				       OR (SELECT transcript_version_id FROM conversation WHERE id = :c) IS NULL)""")
 				.param("c", id).query((rs, i) -> new Object[] { rs.getLong(1), rs.getDouble(2), rs.getString(3), rs.getObject(4), rs.getBoolean(5),
 						(Double) rs.getObject(6) }).list();
+		var personNames = new HashMap<Long, String>();
+		db.sql("SELECT id, CASE WHEN is_me THEN 'Me' ELSE name END FROM person").query((rs, i) -> personNames.put(rs.getLong(1), rs.getString(2))).list();
 		var speakerViews = new ArrayList<SpeakerView>();
 		for (Object[] row : speechByCluster) {
 			var s = speakers.get((Long) row[0]);
 			if (s == null) {
 				continue;
 			}
+			var ranked = row[2] == null ? List.<SpeakerMatcher.Best>of() : matcher.ranked(Vectors.parse((String) row[2]));
+			var candidates = matcher.candidates(ranked, 4).stream()
+					.map(b -> new Candidate(b.personId(), personNames.get(b.personId()), b.isMe(), b.score())).toList();
+			boolean manual = (boolean) row[4];
+			// Unnamed by the app, not by the user ("I don't know who this is" offers nothing more).
+			boolean nearTie = row[3] == null && !manual && matcher.nearTie(ranked);
 			String suggestion = null;
 			Long suggestionId = null;
-			if (row[3] == null && row[2] != null) {
-				var best = matcher.suggest(Vectors.parse((String) row[2]));
-				if (best != null) {
-					suggestionId = best.personId();
-					suggestion = db.sql("SELECT CASE WHEN is_me THEN 'Me' ELSE name END FROM person WHERE id = :id").param("id", best.personId())
-							.query(String.class).single() + " (" + String.format("%.2f", best.score()) + ")";
-				}
+			if (row[3] == null && !manual && !candidates.isEmpty()) {
+				var best = candidates.getFirst();
+				suggestionId = best.personId();
+				suggestion = nearTie
+						? best.name() + " or " + candidates.get(1).name()
+						: best.name() + " (" + String.format("%.2f", best.score()) + ")";
 			}
 			// Named by the app from a remembered voice, not by the user: worth a glance.
-			boolean recognised = s.personId() != null && !s.isMe() && !(boolean) row[4];
+			boolean recognised = s.personId() != null && !s.isMe() && !manual;
 			speakerViews.add(new SpeakerView(s.clusterId(), s.name(), s.personId(), s.isMe(), key(s), s.channel(), (double) row[1],
-					suggestion, suggestionId, recognised, recognised ? (Double) row[5] : null));
+					suggestion, suggestionId, recognised, recognised ? (Double) row[5] : null, candidates, nearTie));
 		}
 		// The same order as the day card (owner, 2026-10-26).
 		var first = firstSpoken(id);

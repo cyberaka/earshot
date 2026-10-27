@@ -114,6 +114,56 @@ public class PeopleService {
 	}
 
 	/**
+	 * "Not Thejasvini, and I don't know who" (owner, 2026-10-27): the speaker goes back to unnamed and
+	 * stays so (manual), and any voice remembered from it is forgotten.
+	 */
+	@Transactional
+	public void unname(long clusterId) {
+		db.sql("""
+				UPDATE speaker_cluster SET person_id = NULL, manual = true, remember = false
+				WHERE id = :id OR id = (SELECT origin_cluster_id FROM speaker_cluster WHERE id = :id)
+				   OR origin_cluster_id = COALESCE((SELECT origin_cluster_id FROM speaker_cluster WHERE id = :id), :id)""")
+				.param("id", clusterId).update();
+		int removed = db.sql("DELETE FROM voiceprint WHERE cluster_id = :id").param("id", clusterId).update();
+		log.info("event=speaker_unnamed cluster={} forgotten={}", clusterId, removed);
+		if (removed > 0) {
+			rematch();
+		}
+		reexport("SELECT DISTINCT c.local_date FROM conversation c JOIN speaker_cluster sc ON sc.conversation_id = c.id WHERE sc.id = " + clusterId);
+	}
+
+	/** A person's remembered voice samples, newest first, with where each was heard and a line to play. */
+	public List<Map<String, Object>> voiceprints(long personId) {
+		return db.sql("""
+				SELECT v.id, v.source, v.created_at, v.cluster_id, c.id AS conversation_id, c.local_date::text AS local_date, c.title,
+				       c.recording_id, r.time_zone, r.started_at + make_interval(secs => c.start_offset_s) AS conversation_started_at,
+				       sc.speech_s,
+				       (SELECT json_build_array(s.start_s, s.end_s) FROM segment s WHERE s.speaker_cluster_id = sc.id
+				            ORDER BY s.end_s - s.start_s DESC LIMIT 1)::text AS sample
+				FROM voiceprint v LEFT JOIN speaker_cluster sc ON sc.id = v.cluster_id
+				LEFT JOIN conversation c ON c.id = sc.conversation_id LEFT JOIN recording r ON r.id = c.recording_id
+				WHERE v.person_id = :p ORDER BY v.created_at DESC, v.id DESC""").param("p", personId).query().listOfRows();
+	}
+
+	/**
+	 * Forgets one voice sample (owner, 2026-10-27: a wrong sample keeps naming the wrong person). The
+	 * speaker it came from keeps its name; it is just no longer used to recognise anyone.
+	 */
+	@Transactional
+	public void deleteVoiceprint(long id) {
+		Long cluster = db.sql("SELECT cluster_id FROM voiceprint WHERE id = :id").param("id", id).query(Long.class).optional().orElse(null);
+		if (db.sql("DELETE FROM voiceprint WHERE id = :id").param("id", id).update() == 0) {
+			throw new IllegalArgumentException("No such voice sample.");
+		}
+		// Otherwise moving a line would rebuild the sample from that speaker.
+		if (cluster != null) {
+			db.sql("UPDATE speaker_cluster SET remember = false WHERE id = :id").param("id", cluster).update();
+		}
+		log.info("event=voiceprint_deleted id={} cluster={}", id, cluster);
+		rematch();
+	}
+
+	/**
 	 * "This line was Rudraansh" (owner request, 2026-10-20): moves one line to a person, leaving the rest
 	 * of its speaker alone. The line is pinned so live regrouping won't move it back. Returns the
 	 * cluster it was moved from and the one it now belongs to.

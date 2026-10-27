@@ -78,6 +78,8 @@ earshot:
     me_threshold: 0.6
     me_ambient_threshold: 0.45
     person_threshold: 0.6
+    # A person is named only this far ahead of the next closest voice; closer is a near tie to confirm.
+    person_margin: 0.05
     me_min_speech_seconds: 10
     diarization_threshold: 0.68
     # Live speaker separation: a voice this far (cosine distance) from everyone heard so far is a new speaker.

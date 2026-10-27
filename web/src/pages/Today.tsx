@@ -461,10 +461,13 @@ export function NameSpeaker({ speaker, line, people, onClose, onSaved }: {
   const [addToLibrary, setAdd] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // "No, not Thejasvini" (owner, 2026-10-27): a wrong guess first asks yes or no, then offers the rest.
+  const [notThem, setNotThem] = useState(false)
   const named = speaker.personId !== null || speaker.isMe
   const [scope, setScope] = useState<'line' | 'speaker'>(line && named ? 'line' : 'speaker')
   const oneLine = scope === 'line' && !!line
-  async function save(body: { personId?: number | null; name?: string; me?: boolean }) {
+  const guessed = !oneLine && speaker.recognised && speaker.personId !== null
+  async function save(body: { personId?: number | null; name?: string; me?: boolean; unnamed?: boolean }) {
     setBusy(true)
     try {
       if (oneLine) await api.assignLines(line!.ids ?? [line!.id], { ...body, addToLibrary })
@@ -472,12 +475,19 @@ export function NameSpeaker({ speaker, line, people, onClose, onSaved }: {
       onSaved()
     } catch (e) { setError(String(e)); setBusy(false) }
   }
+  // The voices closest to this speaker, other than the name it has now: a wrong guess is often the runner-up.
+  const closest = oneLine ? [] : speaker.candidates.filter(c => c.personId !== speaker.personId)
   // Moving a line to the speaker it already has changes nothing.
-  const others = people.filter(p => !p.is_me && !(speaker.personId === p.id && (oneLine || speaker.recognised)))
+  const others = people.filter(p => !p.is_me && !closest.some(c => c.personId === p.id)
+    && !(speaker.personId === p.id && (oneLine || speaker.recognised)))
+  const choosing = !guessed || notThem
+  const title = oneLine ? ((line?.ids?.length ?? 1) > 1 ? 'Who said these lines?' : 'Who said this line?')
+    : guessed ? (notThem ? `Not ${speaker.name}: who is it?` : `Is this ${speaker.name}?`)
+      : speaker.nearTie && speaker.suggestion ? `Is this ${speaker.suggestion}?` : `Who is ${speaker.name}?`
   return (
     <div className={s.namePanel} role="group" aria-label={oneLine ? 'Who said this line' : `Name ${speaker.name}`}>
       <div className={s.namePanelHead}>
-        <b>{oneLine ? ((line?.ids?.length ?? 1) > 1 ? 'Who said these lines?' : 'Who said this line?') : speaker.recognised ? `Is this ${speaker.name}?` : `Who is ${speaker.name}?`}</b>
+        <b>{title}</b>
         <span className={ui.muted}>{oneLine
           ? `now ${speaker.name}`
           : `${Math.round(speaker.speechS)} s of speech${speaker.recognised && speaker.matchScore !== null ? ` · recognised by voice (${speaker.matchScore.toFixed(2)})` : ''}`}</span>
@@ -491,24 +501,41 @@ export function NameSpeaker({ speaker, line, people, onClose, onSaved }: {
           </div>
         </>
       )}
-      <div className={s.nameRow}>
-        {!oneLine && speaker.suggestion && speaker.suggestionPersonId && (
-          <button className={ui.btnSmall} disabled={busy} onClick={() => save(people.find(p => p.id === speaker.suggestionPersonId)?.is_me ? { me: true } : { personId: speaker.suggestionPersonId })}>
-            Sounds like {speaker.suggestion}
-          </button>
-        )}
-        {!oneLine && speaker.recognised && speaker.personId !== null && (
+      {guessed && !notThem && (
+        <div className={s.nameRow}>
           <button className={ui.btnSmall} disabled={busy} onClick={() => save({ personId: speaker.personId })}>Yes, it's {speaker.name}</button>
-        )}
-        {!(oneLine && speaker.isMe) && <button className={ui.btnSmall} disabled={busy} onClick={() => save({ me: true })}>This is me</button>}
-        {others.slice(0, 8).map(p => <button key={p.id} className={ui.btnSmall} disabled={busy} onClick={() => save({ personId: p.id })}>{p.name}</button>)}
-      </div>
-      <form className={s.nameRow} onSubmit={e => { e.preventDefault(); if (name.trim()) save({ name: name.trim() }) }}>
-        <label className="sr-only" htmlFor="new-name">New name</label>
-        <input id="new-name" className={ui.input} placeholder="Type a new name" value={name} onChange={e => setName(e.target.value)} />
-        <button className={ui.primary} disabled={busy || !name.trim()}>Save</button>
-        <button type="button" className={ui.btnSmall} onClick={onClose}>Cancel</button>
-      </form>
+          <button className={ui.btnSmall} disabled={busy} onClick={() => setNotThem(true)}>No, not {speaker.name}</button>
+          <button type="button" className={ui.btnSmall} onClick={onClose}>Cancel</button>
+        </div>
+      )}
+      {choosing && closest.length > 0 && (
+        <div className={s.nameRow}>
+          <span className={ui.muted}>Closest voices</span>
+          {closest.map(c => (
+            <button key={c.personId} className={ui.btnSmall} disabled={busy} title={`Voice similarity ${c.score.toFixed(2)}`}
+              onClick={() => save(c.isMe ? { me: true } : { personId: c.personId })}>
+              {c.name} <span className={ui.muted}>· {c.score.toFixed(2)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {choosing && (
+        <>
+          <div className={s.nameRow}>
+            {!(oneLine && speaker.isMe) && !closest.some(c => c.isMe) && <button className={ui.btnSmall} disabled={busy} onClick={() => save({ me: true })}>This is me</button>}
+            {others.slice(0, 8).map(p => <button key={p.id} className={ui.btnSmall} disabled={busy} onClick={() => save({ personId: p.id })}>{p.name}</button>)}
+          </div>
+          <form className={s.nameRow} onSubmit={e => { e.preventDefault(); if (name.trim()) save({ name: name.trim() }) }}>
+            <label className="sr-only" htmlFor="new-name">New name</label>
+            <input id="new-name" className={ui.input} placeholder="New person: type their name" value={name} onChange={e => setName(e.target.value)} />
+            <button className={ui.primary} disabled={busy || !name.trim()}>Save</button>
+            {!oneLine && (speaker.personId !== null || speaker.suggestion) &&
+              <button type="button" className={ui.btnSmall} disabled={busy} title="Leaves this speaker unnamed and stops guessing who it is"
+                onClick={() => save({ unnamed: true })}>Don't know, leave unnamed</button>}
+            <button type="button" className={ui.btnSmall} onClick={onClose}>Cancel</button>
+          </form>
+        </>
+      )}
       <label className={s.check}>
         <input type="checkbox" checked={addToLibrary} onChange={e => setAdd(e.target.checked)} />
         <span>Remember this voice <span className={ui.muted}>· recognise them in future meetings and recordings</span></span>

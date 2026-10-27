@@ -34,11 +34,16 @@ public class PeopleController {
 		return Map.of("people", people.list(), "unknowns", people.unknowns(20));
 	}
 
-	public record Assign(Long personId, String name, boolean me, boolean addToLibrary) {
+	public record Assign(Long personId, String name, boolean me, boolean addToLibrary, boolean unnamed) {
 	}
 
 	@PatchMapping("/speaker-clusters/{id}")
 	public Map<String, Object> assign(@PathVariable long id, @RequestBody Assign req) {
+		if (req.unnamed()) {
+			people.unname(id);
+			meetings.onSpeakerChanged(id);
+			return Map.of("ok", true);
+		}
 		if (req.personId() == null && !req.me() && (req.name() == null || req.name().isBlank())) {
 			throw new IllegalArgumentException("Give a person or a name.");
 		}
@@ -138,6 +143,17 @@ public class PeopleController {
 	@PostMapping("/enroll/segments")
 	public Map<String, Object> enrollSegments(@RequestBody Segments req) {
 		people.enrollFromSegments(req.segmentIds());
+		return Map.of("ok", true);
+	}
+
+	@GetMapping("/people/{id}/voiceprints")
+	public List<Map<String, Object>> voiceprints(@PathVariable long id) {
+		return people.voiceprints(id);
+	}
+
+	@DeleteMapping("/voiceprints/{id}")
+	public Map<String, Object> deleteVoiceprint(@PathVariable long id) {
+		people.deleteVoiceprint(id);
 		return Map.of("ok", true);
 	}
 

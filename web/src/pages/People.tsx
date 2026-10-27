@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, speakerColor, type Person, type Unknown } from '../api'
+import { api, speakerColor, type Person, type Unknown, type VoiceSample } from '../api'
 import ui from '../components/ui.module.css'
 import { ConfirmButton } from './Today'
 import s from './People.module.css'
@@ -22,7 +22,7 @@ export default function People() {
       {error && <div className={ui.error}>{error}</div>}
       {msg && <div className={ui.notice}>{msg}</div>}
       <div className={s.top}>
-        <MeCard me={me} onSaved={m => { setMsg(m); setTimeout(load, 1500) }} />
+        <MeCard me={me} onSaved={m => { setMsg(m); setTimeout(load, 1500) }} onChanged={load} />
         <section className={`${ui.card} ${s.unknowns}`}>
           <div className={s.headRow}><h2 className={s.h2}>Name these speakers</h2><span className={ui.muted}>Unnamed voices are forgotten after 90 days</span></div>
           {unknowns.length === 0 && <span className={ui.muted}>No unnamed speakers.</span>}
@@ -48,8 +48,9 @@ export default function People() {
   )
 }
 
-function MeCard({ me, onSaved }: { me?: Person; onSaved: (m: string) => void }) {
+function MeCard({ me, onSaved, onChanged }: { me?: Person; onSaved: (m: string) => void; onChanged: () => void }) {
   const [rec, setRec] = useState<MediaRecorder | null>(null)
+  const [samples, setSamples] = useState(false)
   const [secs, setSecs] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const chunks = useRef<Blob[]>([])
@@ -89,7 +90,9 @@ function MeCard({ me, onSaved }: { me?: Person; onSaved: (m: string) => void }) 
           ? <button className={ui.live} onClick={() => { rec.stop(); setRec(null) }}>Stop · {secs}s {secs < 30 ? '(aim for 30–60 s)' : ''}</button>
           : <button className={ui.btn} onClick={startRec}>Record with laptop mic</button>}
         <label className={ui.btn}>Upload a clip<input type="file" accept="audio/*" className="sr-only" onChange={e => e.target.files?.[0] && uploadClip(e.target.files[0])} /></label>
+        {me && me.voiceprints > 0 && <button className={ui.btnSmall} aria-expanded={samples} onClick={() => setSamples(!samples)}>{samples ? 'Hide voice samples' : 'Voice samples'}</button>}
       </div>
+      {me && samples && <VoiceSamples person={me} onChanged={onChanged} />}
       {error && <div className={ui.error}>{error}</div>}
     </section>
   )
@@ -137,8 +140,10 @@ function PersonRow({ p, people, onChanged }: { p: Person; people: Person[]; onCh
   const [name, setName] = useState(p.name)
   const [aliases, setAliases] = useState(p.aliases.join(', '))
   const [mergeInto, setMergeInto] = useState<string>('')
+  const [samples, setSamples] = useState(false)
   const col = speakerColor(`p${p.id}`)
   return (
+    <Fragment>
     <tr>
       <td>
         {editing
@@ -146,7 +151,11 @@ function PersonRow({ p, people, onChanged }: { p: Person; people: Person[]; onCh
           : <span className={s.personName}><span className={s.initial} style={{ background: col.bg, color: col.fg }}>{p.name.slice(0, 1).toUpperCase()}</span>{p.name}</span>}
       </td>
       <td>{editing ? <input className={ui.input} style={{ height: 36 }} value={aliases} onChange={e => setAliases(e.target.value)} aria-label="Aliases, comma separated" /> : (p.aliases.join(', ') || '—')}</td>
-      <td>{p.voiceprint_sources ?? '—'}</td>
+      <td>
+        {p.voiceprints > 0
+          ? <button className={s.linkBtn} aria-expanded={samples} onClick={() => setSamples(!samples)}>{p.voiceprint_sources}</button>
+          : '—'}
+      </td>
       <td className="mono">{p.conversations}</td>
       <td>{p.last_seen ?? '—'}</td>
       <td className={s.rowActions}>
@@ -161,5 +170,54 @@ function PersonRow({ p, people, onChanged }: { p: Person; people: Person[]; onCh
         <ConfirmButton label="Delete" confirm={`Delete ${p.name}`} onConfirm={() => api.deletePerson(p.id).then(onChanged)} />
       </td>
     </tr>
+    {samples && <tr><td colSpan={6} className={s.samplesCell}><VoiceSamples person={p} onChanged={onChanged} /></td></tr>}
+    </Fragment>
+  )
+}
+
+/**
+ * The voice samples Earshot recognises a person by (owner, 2026-10-27): each can be played and
+ * removed, so one taken from the wrong speaker stops naming others as this person.
+ */
+function VoiceSamples({ person, onChanged }: { person: Person; onChanged: () => void }) {
+  const [rows, setRows] = useState<VoiceSample[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const audio = useRef<HTMLAudioElement>(null)
+  const load = useCallback(() => api.voiceprints(person.id).then(setRows).catch(e => setError(String(e))), [person.id])
+  useEffect(() => { load() }, [load, person.voiceprints])
+  if (error) return <div className={ui.error}>{error}</div>
+  if (!rows) return <span className={ui.muted}>Loading…</span>
+  const label = (src: string) => ({ recorder: 'Recorder', call: 'Online call', laptop_mic: 'Laptop mic', upload: 'Uploaded clip' } as Record<string, string>)[src] ?? src
+  return (
+    <div className={s.samples}>
+      <audio ref={audio} hidden />
+      <span className={ui.muted}>{person.is_me ? 'Your' : `${person.name}'s`} voice is recognised from these samples. Remove one taken from someone else.</span>
+      {rows.length === 0 && <span className={ui.muted}>No voice samples.</span>}
+      {rows.map(v => {
+        const sample: [number, number] | null = v.sample ? JSON.parse(v.sample) : null
+        const when = v.conversation_started_at
+          ? new Date(v.conversation_started_at).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', timeZone: v.time_zone ?? undefined })
+          : new Date(v.created_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+        return (
+          <div key={v.id} className={s.sample}>
+            <button className={s.playSmall} aria-label="Play this sample" disabled={!sample || v.recording_id === null}
+              title={sample ? 'Play their longest line' : 'Recorded or uploaded clip: nothing to play here'} onClick={() => {
+                if (!sample || v.recording_id === null || !audio.current) return
+                audio.current.src = api.audioUrl(v.recording_id, sample[0], Math.min(sample[1], sample[0] + 8))
+                audio.current.play().catch(() => {})
+              }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4l13 8-13 8z" /></svg>
+            </button>
+            <div className={s.sampleText}>
+              {v.conversation_id !== null
+                ? <Link to={`/day/${v.local_date}/${v.conversation_id}`}>{v.title ?? `Conversation #${v.conversation_id}`}</Link>
+                : <span>{label(v.source)}</span>}
+              <span className={ui.muted}>{when} · {label(v.source)}{v.speech_s ? ` · ${Math.round(v.speech_s)} s of speech` : ''}</span>
+            </div>
+            <ConfirmButton label="Remove" confirm="Remove this sample" onConfirm={() => api.deleteVoiceprint(v.id).then(() => { load(); onChanged() })} />
+          </div>
+        )
+      })}
+    </div>
   )
 }

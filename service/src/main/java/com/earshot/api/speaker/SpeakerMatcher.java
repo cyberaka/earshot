@@ -78,13 +78,8 @@ public class SpeakerMatcher {
 				}
 				continue;
 			}
-			Long person = null;
 			double score = ranked.isEmpty() ? 0 : ranked.getFirst().score();
-			if (!ranked.isEmpty() && ranked.getFirst().isMe() && score >= meT) {
-				person = ranked.getFirst().personId();
-			} else if (!ranked.isEmpty() && !ranked.getFirst().isMe() && score >= personT) {
-				person = ranked.getFirst().personId();
-			}
+			Long person = pick(ranked, meT, personT, settings.num("person_margin"));
 			if (meScore >= meT && person != null && person.equals(meId)) {
 				meSpeech += speech;
 			}
@@ -113,14 +108,8 @@ public class SpeakerMatcher {
 		}
 		var prints = prints();
 		var ranked = rank(Vectors.parse((String) row.get()[0]), prints);
-		Long person = null;
 		double score = ranked.isEmpty() ? 0 : ranked.getFirst().score();
-		if (!ranked.isEmpty()) {
-			var top = ranked.getFirst();
-			if (top.score() >= (top.isMe() ? settings.num("me_threshold") : settings.num("person_threshold"))) {
-				person = top.personId();
-			}
-		}
+		Long person = pick(ranked, settings.num("me_threshold"), settings.num("person_threshold"), settings.num("person_margin"));
 		if (person == null && micIsMe && "mic".equals(row.get()[2]) && prints.stream().noneMatch(Print::isMe)) {
 			person = db.sql("SELECT id FROM person WHERE is_me").query(Long.class).optional()
 					.orElseGet(() -> db.sql("INSERT INTO person (name, is_me) VALUES ('Me', true) RETURNING id").query(Long.class).single());
@@ -129,13 +118,37 @@ public class SpeakerMatcher {
 				.param("id", clusterId).update();
 	}
 
-	/** A near-threshold suggestion for an unnamed cluster (PRD §7 naming flow). */
-	public Best suggest(float[] embedding) {
-		var ranked = rank(embedding, prints());
+	/**
+	 * Who a cluster is, from its ranked voices. Another person is named only when they also beat the
+	 * runner-up by the margin (owner, 2026-10-27: Pooja was named Thejasvini at 0.63 with Macrina at
+	 * 0.60); a near tie stays unnamed and is offered as "Thejasvini or Macrina?".
+	 */
+	static Long pick(List<Best> ranked, double meT, double personT, double margin) {
 		if (ranked.isEmpty()) {
 			return null;
 		}
-		var b = ranked.getFirst();
-		return b.score() >= settings.num("person_threshold") - 0.2 ? b : null;
+		var top = ranked.getFirst();
+		if (top.isMe()) {
+			return top.score() >= meT ? top.personId() : null;
+		}
+		boolean clear = ranked.size() < 2 || top.score() - ranked.get(1).score() >= margin;
+		return top.score() >= personT && clear ? top.personId() : null;
+	}
+
+	/** True when the top voice passes the threshold but the runner-up is too close to tell apart. */
+	public boolean nearTie(List<Best> ranked) {
+		return !ranked.isEmpty() && !ranked.getFirst().isMe() && ranked.getFirst().score() >= settings.num("person_threshold")
+				&& pick(ranked, settings.num("me_threshold"), settings.num("person_threshold"), settings.num("person_margin")) == null;
+	}
+
+	/** The voices of a cluster, best person first, for naming it. */
+	public List<Best> ranked(float[] embedding) {
+		return rank(embedding, prints());
+	}
+
+	/** The closest of those worth offering when naming a cluster (PRD §7 naming flow). */
+	public List<Best> candidates(List<Best> ranked, int n) {
+		double floor = settings.num("person_threshold") - 0.2;
+		return ranked.stream().filter(b -> b.score() >= floor).limit(n).toList();
 	}
 }
