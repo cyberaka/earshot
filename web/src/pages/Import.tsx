@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type DragEvent } from 'react'
+import { Fragment, useCallback, useEffect, useState, type DragEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { api, LANGUAGES, type Health, type Job } from '../api'
 import { useHealth } from '../components/Shell'
@@ -38,6 +38,8 @@ export default function Import() {
   const [error, setError] = useState<string | null>(null)
   const [jobs, setJobs] = useState<Job[]>([])
   const [drag, setDrag] = useState(false)
+  // Dates whose list the user opened or closed; the newest date starts open, older ones closed.
+  const [toggled, setToggled] = useState<Set<string>>(new Set())
 
   const loadJobs = useCallback(() => api.jobs().then(setJobs).catch(() => {}), [])
   useEffect(() => { loadJobs(); const t = setInterval(loadJobs, 3000); return () => clearInterval(t) }, [loadJobs])
@@ -75,6 +77,7 @@ export default function Import() {
   }
 
   const convJobs = latestPerConversation(jobs)
+  const byDate = groupByDate(convJobs)
 
   return (
     <>
@@ -139,21 +142,38 @@ export default function Import() {
         {convJobs.length === 0 ? <span className={ui.muted}>Nothing imported yet.</span> : (
           <div className={ui.tableWrap}>
             <table className={`${ui.table} ${s.jobs}`}>
-              <thead><tr><th>When</th><th>Conversation</th><th className={s.num}>Length</th><th className={s.num}>Speakers</th><th className={s.num}>Lines</th><th>Status</th></tr></thead>
+              <thead><tr><th>When</th><th className={s.num}>#</th><th>Conversation</th><th className={s.num}>Length</th><th className={s.num}>Speakers</th><th className={s.num}>Lines</th><th>Status</th></tr></thead>
               <tbody>
-                {convJobs.map(j => (
-                  <tr key={j.id}>
-                    <td className={s.when}>{j.conversation_started_at ? new Date(j.conversation_started_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: j.time_zone ?? undefined }) : ''}</td>
-                    <td>
-                      {j.title && !j.is_ambient ? <Link to={`/day/${j.local_date}/${j.conversation_id}`}>{j.title}</Link> : <Link to={`/day/${j.local_date}/${j.conversation_id}`}>Untitled conversation</Link>}
-                      {j.original_name && <div className={ui.muted}>{j.original_name}</div>}
-                    </td>
-                    <td className={s.num}>{j.duration_s ? length(j.duration_s) : ''}</td>
-                    <td className={s.num}>{j.is_ambient || !j.speakers ? '' : j.speakers}</td>
-                    <td className={s.num}>{j.is_ambient || !j.lines ? '' : j.lines}</td>
-                    <td><Status j={j} onTranscribe={() => api.transcribeAmbient(j.conversation_id!).then(loadJobs)} /></td>
-                  </tr>
-                ))}
+                {byDate.map(([date, rows], di) => {
+                  const open = (di === 0) !== toggled.has(date)
+                  return (
+                    <Fragment key={date}>
+                      <tr className={s.dateRow}>
+                        <td colSpan={7}>
+                          <button className={s.dateToggle} aria-expanded={open}
+                            onClick={() => { const n = new Set(toggled); if (n.has(date)) n.delete(date); else n.add(date); setToggled(n) }}>
+                            <span aria-hidden="true">{open ? '▾' : '▸'}</span> {fmtDate(date)}
+                            <span className={ui.muted}> · {rows.length} conversation{rows.length === 1 ? '' : 's'}</span>
+                          </button>
+                        </td>
+                      </tr>
+                      {open && rows.map(j => (
+                        <tr key={j.id}>
+                          <td className={s.when}>{j.conversation_started_at ? new Date(j.conversation_started_at).toLocaleString(undefined, { hour: 'numeric', minute: '2-digit', timeZone: j.time_zone ?? undefined }) : ''}</td>
+                          <td className={`${s.num} mono`}>{j.conversation_id}</td>
+                          <td>
+                            <Link to={`/day/${j.local_date}/${j.conversation_id}`}>{j.title && !j.is_ambient ? j.title : who(j)}</Link>
+                            {j.original_name && <div className={ui.muted}>{j.original_name}</div>}
+                          </td>
+                          <td className={s.num}>{j.duration_s ? length(j.duration_s) : ''}</td>
+                          <td className={s.num}>{j.is_ambient || !j.speakers ? '' : j.speakers}</td>
+                          <td className={s.num}>{j.is_ambient || !j.lines ? '' : j.lines}</td>
+                          <td><Status j={j} onTranscribe={() => api.transcribeAmbient(j.conversation_id!).then(loadJobs)} /></td>
+                        </tr>
+                      ))}
+                    </Fragment>
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -170,6 +190,29 @@ function latestPerConversation(jobs: Job[]) {
     .filter(j => { if (seen.has(j.conversation_id!)) return false; seen.add(j.conversation_id!); return true })
     .sort((a, b) => (b.conversation_started_at ?? '').localeCompare(a.conversation_started_at ?? ''))
     .slice(0, 60)
+}
+
+/** Conversations grouped by their local date, newest date first, keeping the newest-first order inside. */
+function groupByDate(jobs: Job[]): [string, Job[]][] {
+  const out = new Map<string, Job[]>()
+  for (const j of jobs) {
+    const d = j.local_date ?? ''
+    out.set(d, [...(out.get(d) ?? []), j])
+  }
+  return [...out.entries()]
+}
+
+function fmtDate(date: string) {
+  if (!date) return 'No date'
+  return new Date(`${date}T00:00:00`).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+/** Untitled conversations are named by who spoke: "Untitled conversation" told the owner nothing. */
+function who(j: Job) {
+  if (j.is_ambient) return 'Background speech'
+  const unnamed = j.unnamed ? `${j.unnamed} unnamed` : ''
+  if (j.people) return unnamed ? `${j.people} + ${unnamed}` : j.people
+  return unnamed ? `${unnamed} speaker${j.unnamed === 1 ? '' : 's'}` : 'Untitled conversation'
 }
 
 function length(sec: number) {

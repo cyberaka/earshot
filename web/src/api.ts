@@ -19,6 +19,17 @@ export interface SpeakerView {
   clusterId: number; name: string; personId: number | null; isMe: boolean; key: string; channel: string
   speechS: number; suggestion: string | null; suggestionPersonId: number | null
   recognised: boolean; matchScore: number | null
+  /** The closest remembered voices, best first; nearTie: the best two are too close for Earshot to pick. */
+  candidates: Candidate[]; nearTie: boolean
+}
+
+export interface Candidate { personId: number; name: string; isMe: boolean; score: number }
+
+/** One remembered voice sample of a person, and where it was heard (null for a recorded or uploaded clip). */
+export interface VoiceSample {
+  id: number; source: string; created_at: string; cluster_id: number | null; conversation_id: number | null
+  local_date: string | null; title: string | null; recording_id: number | null; time_zone: string | null
+  conversation_started_at: string | null; speech_s: number | null; sample: string | null
 }
 
 export interface SegmentView {
@@ -127,6 +138,7 @@ export interface Job {
   original_name: string | null; title: string | null; conversation_started_at: string | null
   conversation_stage: string | null; is_ambient: boolean | null; time_zone: string | null; local_date: string | null
   source_type: string | null; duration_s: number | null; lines: number | null; speakers: number | null
+  people: string | null; unnamed: number | null
 }
 
 /**
@@ -253,8 +265,10 @@ export const api = {
     get<{ transcript: SearchHit[]; notes: NoteHit[] }>(`/api/search?q=${encodeURIComponent(q)}${meaning ? '&meaning=true' : ''}`),
 
   people: () => get<{ people: Person[]; unknowns: Unknown[] }>('/api/people'),
-  assignCluster: (id: number, body: { personId?: number | null; name?: string; me?: boolean; addToLibrary: boolean }) =>
-    send('PATCH', `/api/speaker-clusters/${id}`, { personId: null, name: null, me: false, ...body }),
+  assignCluster: (id: number, body: { personId?: number | null; name?: string; me?: boolean; unnamed?: boolean; addToLibrary: boolean }) =>
+    send('PATCH', `/api/speaker-clusters/${id}`, { personId: null, name: null, me: false, unnamed: false, ...body }),
+  voiceprints: (personId: number) => get<VoiceSample[]>(`/api/people/${personId}/voiceprints`),
+  deleteVoiceprint: (id: number) => send('DELETE', `/api/voiceprints/${id}`),
   updatePerson: (id: number, name: string, aliases: string[]) => send('PATCH', `/api/people/${id}`, { name, aliases }),
   mergePerson: (id: number, intoId: number) => send('POST', `/api/people/${id}/merge`, { intoId }),
   deletePerson: (id: number) => send('DELETE', `/api/people/${id}`),

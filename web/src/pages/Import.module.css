@@ -25,6 +25,23 @@
 .jobs { min-width: 640px; }
 .jobs td { padding: 8px 10px; }
 .when { white-space: nowrap; color: var(--ink-2); }
+.dateRow td { padding: 0; background: var(--surface); }
+.dateToggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.dateToggle:hover { background: var(--border-soft); }
 .jobs .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .status { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .ok { color: var(--ok); font-weight: 600; }

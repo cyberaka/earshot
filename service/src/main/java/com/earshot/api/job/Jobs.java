@@ -75,7 +75,12 @@ public class Jobs {
 				       j.meeting_id, COALESCE(r.original_name, c.file_name) AS original_name, c.title, c.local_date::text AS local_date, c.started_at AS conversation_started_at, c.stage AS conversation_stage,
 				       c.is_ambient, c.time_zone, COALESCE(r.source_type, c.source_type) AS source_type, c.end_offset_s - c.start_offset_s AS duration_s,
 				       (SELECT count(*) FROM segment s WHERE s.conversation_id = c.id AND NOT s.live) AS lines,
-				       (SELECT count(DISTINCT s.speaker_cluster_id) FROM segment s WHERE s.conversation_id = c.id AND NOT s.live) AS speakers
+				       (SELECT count(DISTINCT s.speaker_cluster_id) FROM segment s WHERE s.conversation_id = c.id AND NOT s.live) AS speakers,
+				       (SELECT string_agg(x.name, ', ' ORDER BY x.is_me DESC, x.first_s) FROM (SELECT p.name, p.is_me, min(s.start_s) AS first_s
+				            FROM segment s JOIN speaker_cluster sc ON sc.id = s.speaker_cluster_id JOIN person p ON p.id = sc.person_id
+				            WHERE s.conversation_id = c.id AND NOT s.live GROUP BY p.id, p.name, p.is_me) x) AS people,
+				       (SELECT count(DISTINCT s.speaker_cluster_id) FROM segment s JOIN speaker_cluster sc ON sc.id = s.speaker_cluster_id
+				            WHERE s.conversation_id = c.id AND NOT s.live AND sc.person_id IS NULL) AS unnamed
 				FROM job j
 				LEFT JOIN recording r ON r.id = j.recording_id
 				LEFT JOIN (SELECT c.*, r2.time_zone, r2.source_type, r2.original_name AS file_name FROM conversation c JOIN recording r2 ON r2.id = c.recording_id) c ON c.id = j.conversation_id
