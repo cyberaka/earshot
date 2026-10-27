@@ -283,7 +283,8 @@ function Conversation({ id, onChanged, seek, onSeekDone, summaryWith, liveNow }:
               const shotAt = (d.attachments ?? []).map(a => a.anchorS)
               const groups = groupTurns(d.segments, x => x.clusterId ?? x.key,
                 (x, i) => i > 0 && shotAt.some(t => t <= x.startS && t > d.segments[i - 1].startS))
-              const bands = turnBands(groups, g => g[0].clusterId ?? g[0].key)
+              // Shaded by person, not voice group: one person heard as two groups is still one turn.
+              const bands = turnBands(groups, g => g[0].key)
               return groups.map((g, i) => {
               const seg = g[0]
               const ids = g.map(x => x.id)

@@ -687,7 +687,8 @@ function LiveMeeting({ id }: { id: number }) {
               const partOf = (x: SegmentView) => (x as SegmentView & { part?: number }).part ?? 1
               const index = new Map(segments.map((x, i) => [x.id, i]))
               const groups = groupTurns(segments, x => `${partOf(x)}:${x.clusterId ?? x.key}`, (_x, i) => shotsBefore.has(i))
-              const bands = turnBands(groups, g => g[0].clusterId ?? g[0].key)
+              // Shaded by person, not voice group: one person heard as two groups is still one turn.
+              const bands = turnBands(groups, g => g[0].key)
               return groups.map((g, gi) => {
               const seg = g[0]
               const i = index.get(seg.id)!
